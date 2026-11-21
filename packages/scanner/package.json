@@ -1,0 +1,23 @@
+{
+  "name": "@ai-change-guard/scanner",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "ai-change-guard": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@ai-change-guard/catalog": "0.1.0",
+    "@ai-change-guard/llm": "0.1.0",
+    "@ai-change-guard/replay": "0.1.0"
+  }
+}

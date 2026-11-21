@@ -1,0 +1,7 @@
+// Example golden set: one real prompt per line. Copy this file and replace the prompts with your own.
+// Fields: id, input (or messages), system, tools, expect { json, schema, tool, contains }, max_tokens, temperature, json_mode.
+{"id":"shipping-time","system":"You are the support assistant for an online store. Answer in one or two sentences.","input":"How long does shipping take?"}
+{"id":"refund-policy","system":"You are the support assistant for an online store. Answer in one or two sentences.","input":"Can I get a refund on an opened item?","expect":{"contains":["30 days"]}}
+{"id":"order-json","system":"Extract the order details as JSON with keys order_id (string) and items (list of strings).","input":"Order #A-1042: 2 mugs and a teapot.","json_mode":true,"expect":{"schema":{"type":"object","required":["order_id","items"],"properties":{"order_id":{"type":"string"},"items":{"type":"array","items":{"type":"string"}}}}}}
+{"id":"router-reset","system":"You are a home-internet support assistant.","input":"My wifi keeps dropping. What should I try first?"}
+{"id":"cancel-order","system":"Use the tools to act on the customer's request.","input":"Please cancel order A-1042.","tools":[{"name":"cancel_order","parameters":{"type":"object","required":["order_id"],"properties":{"order_id":{"type":"string"}}}},{"name":"escalate","parameters":{"type":"object","properties":{"reason":{"type":"string"}}}}],"expect":{"tool":"cancel_order"}}

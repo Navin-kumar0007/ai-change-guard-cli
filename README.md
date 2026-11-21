@@ -1,0 +1,76 @@
+# AI Change Guard
+
+AI providers retire models on a schedule. When a model you call is retired, requests start failing, or get quietly rerouted to a different model that may answer differently. AI Change Guard finds every model your code uses, tells you which ones are retiring and when, and proves whether a replacement still works by replaying your real prompts on both models.
+
+- **Scan:** finds model IDs and deprecated AI APIs in code and config (Python, JS/TS, Go, Java, YAML, JSON, `.env` and more) and checks them against a catalog of official retirement dates.
+- **Replay:** runs your own prompts on the old and new model and flags broken JSON, changed tool calls, missing content, new refusals and drifting answers.
+- **Token Saver:** points out common token waste (no output limit, no prompt caching, cache-breaking prompts, unbatched loops).
+- **Runs where you are:** a CLI on your machine and a GitHub Action in your CI. Your code and API keys never leave your machine or runner.
+
+## Quick start
+
+```
+git clone https://github.com/Navin-kumar0007/ai-change-guard-cli
+cd ai-change-guard-cli
+npm install
+npm run build
+node packages/scanner/dist/cli.js scan /path/to/your/app
+```
+
+Example output:
+
+```
+AI Change Guard scan: ./my-app
+2 files scanned · 2 files use an AI SDK · 2 AI call sites · 2 model IDs found · today 2026-11-21
+
+Models
+  STATUS                           MODEL                       PLATFORM       WHERE
+  RETIRED since 2025-10-28         claude-3-5-sonnet-20241022  anthropic-api  src/bot.py:3
+  RETIRES in 54 days (2027-01-14)  gpt-4o-2024-08-06           openai-api     app/chat.ts:3
+  claude-3-5-sonnet-20241022: replacement: claude-sonnet-5-5
+  gpt-4o-2024-08-06: replacement: gpt-6-luna
+```
+
+Options: `--json`, `--fail-on retired|retiring` (exit code 1 for CI), `--today YYYY-MM-DD`.
+
+## Test a model switch on your own prompts
+
+Write a few real prompts to a JSONL file (see [`examples/support-bot.jsonl`](examples/support-bot.jsonl)), set your provider key in the environment, then:
+
+```
+export OPENAI_API_KEY=...        # or ANTHROPIC_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, ...
+node packages/scanner/dist/cli.js replay --set prompts.jsonl --old openai:gpt-4o --new openai:gpt-6-luna --runs 3
+```
+
+Every prompt gets a verdict: same, changed, broken, or could not compare, with the reason. A spend cap (`--max-calls`, default 500) stops a run before it starts if it would make too many calls. Providers: OpenAI, Anthropic, Google Gemini, Groq, OpenRouter, Mistral and Ollama.
+
+## GitHub Action
+
+```yaml
+- uses: actions/checkout@v4
+- uses: Navin-kumar0007/ai-change-guard-cli@v1
+  with:
+    fail-on: retired
+```
+
+Results appear in the run's Summary tab. The Action can also run a replay with keys from your repository secrets; see [action/README.md](action/README.md).
+
+## The retirement catalog
+
+[`packages/catalog/data/models.json`](packages/catalog/data/models.json) lists retirement and reroute dates for OpenAI, Azure OpenAI, Anthropic, Google Gemini and Vertex AI, Amazon Bedrock and Mistral models, each with links to the official source. Entries marked `"verified": false` have not been confirmed on an official page, and the CLI marks them with `*`. Dates change: if you spot a missing or wrong one, open an issue or pull request with the official link.
+
+## Project layout
+
+| Package | What it does |
+| --- | --- |
+| `packages/catalog` | Retirement data and lookup |
+| `packages/scanner` | File walker, model detection, report, the `ai-change-guard` CLI |
+| `packages/llm` | Minimal provider client (fetch only, no SDKs), retries that honour rate limits |
+| `packages/replay` | Golden sets, replay runner, verdict rules, reports |
+| `action` | The GitHub Action |
+
+`npm test` builds everything and runs the test suite. Requires Node 20 or later.
+
+## License
+
+[MIT](LICENSE)

@@ -1,0 +1,62 @@
+{
+  "$comment": "AI API surfaces (endpoints, SDK namespaces) with an announced shutdown. patterns are JavaScript regular expressions matched against each line of code and config.",
+  "apis": [
+    {
+      "id": "openai-assistants-api",
+      "provider": "openai",
+      "name": "OpenAI Assistants API",
+      "patterns": [
+        "\\bbeta\\.assistants\\b",
+        "\\bbeta\\.threads\\b",
+        "/v1/assistants\\b",
+        "/v1/threads\\b"
+      ],
+      "retiresOn": "2026-08-26",
+      "replacement": "Responses API + Conversations API",
+      "verified": true,
+      "sources": [
+        {
+          "url": "https://developers.openai.com/api/docs/deprecations",
+          "checked": "2026-11-18"
+        }
+      ]
+    },
+    {
+      "id": "openai-reusable-prompts-api",
+      "provider": "openai",
+      "name": "OpenAI Reusable Prompts API (/v1/prompts)",
+      "patterns": [
+        "/v1/prompts\\b",
+        "\\bpmpt_[A-Za-z0-9]{6,}"
+      ],
+      "retiresOn": "2026-11-30",
+      "verified": true,
+      "sources": [
+        {
+          "url": "https://developers.openai.com/api/docs/deprecations",
+          "checked": "2026-11-18"
+        }
+      ],
+      "replacement": "Move prompt content into your application code"
+    },
+    {
+      "id": "openai-evals-api",
+      "provider": "openai",
+      "name": "OpenAI Evals platform and API",
+      "patterns": [
+        "/v1/evals\\b",
+        "\\bclient\\.evals\\.",
+        "\\bopenai\\.evals\\."
+      ],
+      "retiresOn": "2026-11-30",
+      "replacement": "Promptfoo (OpenAI's suggested migration)",
+      "verified": true,
+      "sources": [
+        {
+          "url": "https://developers.openai.com/api/docs/deprecations",
+          "checked": "2026-11-18"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+export { loadGoldenSet, parseGoldenSet, GoldenSetError } from "./golden.js";
+export type { GoldenItem, GoldenExpect } from "./golden.js";
+export { validateSchema, extractJson } from "./schema.js";
+export type { JsonSchema } from "./schema.js";
+export { similarity } from "./similarity.js";
+export { runReplay, plannedCalls, SpendCapError } from "./run.js";
+export type { RunRecord, ReplayOptions, Side } from "./run.js";
+export { judgeItem } from "./verdict.js";
+export type { ItemResult, Reason, ReasonCode, SideStats, Verdict } from "./verdict.js";
+export { buildReplayReport, formatReplayMarkdown, formatReplayText, isReroute } from "./report.js";
+export type { ReplayReport, Reroute } from "./report.js";

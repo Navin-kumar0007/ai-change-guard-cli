@@ -1,0 +1,10 @@
+export { classifyModelId, compileApiRules, scanText } from "./detect.js";
+export type { Finding, ModelHit, FileKind } from "./detect.js";
+export { scanDirectory } from "./scan.js";
+export type { ScanResult } from "./scan.js";
+export { buildReport, formatText, daysBetween } from "./report.js";
+export type { Report, ModelRow, ApiRow, RowStatus, TokenTipRow } from "./report.js";
+export { findTokenTips, TOKEN_RULES } from "./tokens.js";
+export type { TokenRule, TokenTip } from "./tokens.js";
+export { buildCheck } from "./check.js";
+export type { CheckOutput, Conclusion } from "./check.js";

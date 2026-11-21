@@ -1,0 +1,37 @@
+name: AI Change Guard
+description: Find retired and retiring AI models in your code, and test a model switch on your own prompts.
+author: Navin-kumar0007
+branding:
+  icon: shield
+  color: blue
+inputs:
+  path:
+    description: Folder to scan, relative to the repository root.
+    default: "."
+  fail-on:
+    description: "Fail the step when a model or API is: retired, retiring (within 90 days), or none."
+    default: retired
+  prompts:
+    description: Golden set of real prompts (JSONL). When set with old-model and new-model, a replay test runs.
+    default: ""
+  old-model:
+    description: Model you use today, as provider:model (e.g. openai:gpt-4o).
+    default: ""
+  new-model:
+    description: Model to switch to, as provider:model (e.g. openai:gpt-6-luna).
+    default: ""
+  runs:
+    description: Runs per prompt on each model.
+    default: "3"
+  concurrency:
+    description: Calls in flight at once. Use 1 on free-tier keys.
+    default: "2"
+  max-calls:
+    description: Refuse to start a replay above this many calls.
+    default: "300"
+  replay-fail-on:
+    description: "Fail the step when a replayed prompt is: broken, changed, or none."
+    default: broken
+runs:
+  using: node24
+  main: action/bundle/index.js
