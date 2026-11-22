@@ -20,13 +20,15 @@ export interface ReplayOptions {
   concurrency?: number;
   maxCalls?: number;
   defaultMaxTokens?: number;
+  /** Which models to call; a repair re-test calls only the new one. Default: both. */
+  sides?: Side[];
   onProgress?: (done: number, total: number) => void;
 }
 
 export class SpendCapError extends Error {}
 
-export function plannedCalls(items: number, runs: number): number {
-  return items * runs * 2;
+export function plannedCalls(items: number, runs: number, sides = 2): number {
+  return items * runs * sides;
 }
 
 function requestFor(item: GoldenItem, model: string, defaultMaxTokens: number): LlmRequest {
@@ -42,7 +44,8 @@ export async function runReplay(options: ReplayOptions): Promise<RunRecord[]> {
   const runs = options.runs ?? 5;
   const concurrency = Math.max(1, options.concurrency ?? 5);
   const maxCalls = options.maxCalls ?? 500;
-  const total = plannedCalls(options.items.length, runs);
+  const sides = options.sides ?? (["old", "new"] as const);
+  const total = plannedCalls(options.items.length, runs, sides.length);
   if (total > maxCalls) {
     throw new SpendCapError(
       `This replay needs ${total} AI calls, above the limit of ${maxCalls}. Lower --runs, use fewer prompts, or raise --max-calls.`,
@@ -52,7 +55,7 @@ export async function runReplay(options: ReplayOptions): Promise<RunRecord[]> {
   const tasks: (() => Promise<RunRecord>)[] = [];
   for (const item of options.items) {
     for (let run = 0; run < runs; run++) {
-      for (const side of ["old", "new"] as const) {
+      for (const side of sides) {
         const request = requestFor(item, side === "old" ? options.oldModel : options.newModel, options.defaultMaxTokens ?? 1024);
         tasks.push(async () => {
           try {

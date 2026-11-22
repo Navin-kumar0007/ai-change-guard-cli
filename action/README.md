@@ -42,6 +42,10 @@ Providers: `openai`, `anthropic`, `google`, `groq`, `openrouter`, `mistral`, `ol
 
 Pull requests from forks do not receive your secrets, so the replay step cannot run on them.
 
+## Prompt Repair
+
+Add `repair: true` to a replay. When the new model breaks a prompt's JSON format, the Action tries a JSON-only instruction in the system prompt, then that plus the provider's JSON mode, re-tests each on the new model, and shows the change that works in the Summary. The step still fails until you apply the fix to your prompt; repair calls count against `max-calls`.
+
 ## Open a pull request that switches the model (evidence PR)
 
 Add `open-pr: true` to a replay. When every prompt passes (nothing broken, no errors), the Action commits the new model ID to a branch named `ai-change-guard/<old>-to-<new>` and opens a pull request whose description is the replay report: the proof that the switch is safe on your real prompts.
@@ -96,6 +100,7 @@ How it behaves:
 | `concurrency` | `2` | Calls in flight; use `1` on free-tier keys |
 | `max-calls` | `300` | Spend cap for one replay |
 | `replay-fail-on` | `broken` | Fail when a prompt is `broken`, `changed`, or `none` |
+| `repair` | `false` | When a JSON format breaks, try prompt fixes on the new model and show the one that works |
 | `open-pr` | `false` | After a passing replay, open a pull request that switches the model |
 | `github-token` | `github.token` | Token for the pull request |
 

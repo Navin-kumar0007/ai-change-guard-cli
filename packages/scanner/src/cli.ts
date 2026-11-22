@@ -1,17 +1,25 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { createClient, parseModelRef, withRetry } from "@ai-change-guard/llm";
 import {
+  applyRepair,
   buildReplayReport,
+  formatRepairMarkdown,
+  formatRepairText,
   formatReplayMarkdown,
   formatReplayText,
+  goldenLine,
   loadGoldenSet,
   plannedCalls,
+  plannedRepairCalls,
+  repairable,
+  runRepair,
   runReplay,
+  type RepairReport,
 } from "@ai-change-guard/replay";
 import { buildReport, formatText, localToday } from "./report.js";
 import { scanDirectory } from "./scan.js";
@@ -37,6 +45,9 @@ Replay options:
   --max-calls N               Refuse to start above this many calls (default 500)
   --json | --markdown         Report format (default: text)
   --fail-on broken|changed    Exit with code 1 if any prompt is broken (or changed)
+  --repair                    When an answer format breaks, try fixes on the new model and report the one that works
+  --repaired-set FILE         With --repair, write a new golden set with the working fixes applied
+                              (prompts only: comments and extra fields are not copied)
 
 Switch options:
   --write                     Change the files (without it, only shows what would change)
@@ -62,6 +73,8 @@ async function replayCommand(args: string[]): Promise<number> {
   let maxCalls = 500;
   let format: "text" | "json" | "markdown" = "text";
   let failOn: "broken" | "changed" | undefined;
+  let repair = false;
+  let repairedSet: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
@@ -73,6 +86,12 @@ async function replayCommand(args: string[]): Promise<number> {
     else if (arg === "--max-calls") maxCalls = positiveInt(args[++i], "--max-calls");
     else if (arg === "--json") format = "json";
     else if (arg === "--markdown") format = "markdown";
+    else if (arg === "--repair") repair = true;
+    else if (arg === "--repaired-set") {
+      const value = args[++i];
+      if (!value || value.startsWith("-")) throw new UsageError("--repaired-set needs a file name.");
+      repairedSet = value;
+    }
     else if (arg === "--fail-on") {
       const value = args[++i];
       if (value !== "broken" && value !== "changed") throw new UsageError("--fail-on must be broken or changed");
@@ -80,6 +99,9 @@ async function replayCommand(args: string[]): Promise<number> {
     } else throw new UsageError(`Unknown option: ${arg}`);
   }
   if (!set || !oldModel || !newModel) throw new UsageError("replay needs --set, --old and --new.");
+  if (repairedSet !== undefined && !repair) throw new UsageError("--repaired-set needs --repair.");
+  // The rewritten set keeps prompts, not comments or extra fields, so never overwrite the original.
+  if (repairedSet !== undefined && resolve(repairedSet) === resolve(set)) throw new UsageError("--repaired-set must be a new file, not the golden set itself.");
   parseModelRef(oldModel);
   parseModelRef(newModel);
 
@@ -87,9 +109,11 @@ async function replayCommand(args: string[]): Promise<number> {
   const total = plannedCalls(items.length, runs);
   if (format === "text") {
     console.error(`${items.length} prompts × ${runs} runs × 2 models = ${total} calls on your API keys.`);
+    if (repair) console.error(`--repair may use the rest of --max-calls (${maxCalls - total} calls) on prompts whose JSON format breaks.`);
     if (items.length < 20) console.error("Tip: 20–50 real prompts give a far more reliable result.");
   }
 
+  const client = withRetry(createClient());
   const records = await runReplay({
     items,
     oldModel,
@@ -97,15 +121,32 @@ async function replayCommand(args: string[]): Promise<number> {
     runs,
     concurrency,
     maxCalls,
-    client: withRetry(createClient()),
+    client,
     onProgress: format === "text" && process.stderr.isTTY ? (done, all) => process.stderr.write(`\rRunning ${done}/${all} calls`) : undefined,
   });
   if (format === "text" && process.stderr.isTTY) process.stderr.write("\n");
 
   const report = buildReplayReport(items, records, { oldModel, newModel, runs });
-  if (format === "json") console.log(JSON.stringify(report, null, 2));
-  else if (format === "markdown") console.log(formatReplayMarkdown(report));
-  else console.log(formatReplayText(report));
+  let repaired: RepairReport | undefined;
+  if (repair && report.items.some(repairable)) {
+    const left = maxCalls - records.length;
+    const needed = plannedRepairCalls(items, report.items, newModel, runs);
+    if (needed > left) {
+      console.error(`Prompt Repair skipped: it could need ${needed} calls, and only ${left} are left under --max-calls ${maxCalls}.`);
+    } else {
+      if (format === "text") console.error("Trying Prompt Repair on the prompts whose answer format broke...");
+      repaired = await runRepair({ items, records, results: report.items, newModel, client, runs, concurrency, maxCalls: left });
+    }
+  }
+  if (format === "json") console.log(JSON.stringify(repaired ? { ...report, repair: repaired } : report, null, 2));
+  else if (format === "markdown") console.log([formatReplayMarkdown(report), repaired ? formatRepairMarkdown(repaired) : ""].filter(Boolean).join("\n\n"));
+  else console.log([formatReplayText(report), repaired ? formatRepairText(repaired) : ""].filter(Boolean).join("\n\n"));
+
+  if (repairedSet) {
+    const patches = new Map((repaired?.results ?? []).flatMap((r) => (r.patch ? [[r.id, r.patch] as const] : [])));
+    await writeFile(resolve(repairedSet), items.map((item) => goldenLine(patches.has(item.id) ? applyRepair(item, patches.get(item.id)!) : item)).join("\n") + "\n");
+    if (format === "text") console.error(`Wrote ${items.length} prompts (${patches.size} repaired) to ${repairedSet}.`);
+  }
 
   if (failOn === "broken" && report.totals.broken > 0) return 1;
   if (failOn === "changed" && report.totals.broken + report.totals.changed > 0) return 1;

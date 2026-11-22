@@ -457,8 +457,8 @@ function similarity(a, b) {
 // packages/replay/dist/run.js
 var SpendCapError = class extends Error {
 };
-function plannedCalls(items, runs) {
-  return items * runs * 2;
+function plannedCalls(items, runs, sides = 2) {
+  return items * runs * sides;
 }
 function requestFor(item, model, defaultMaxTokens) {
   const request = { model, messages: item.messages, maxTokens: item.maxTokens ?? defaultMaxTokens };
@@ -476,14 +476,15 @@ async function runReplay(options) {
   const runs = options.runs ?? 5;
   const concurrency = Math.max(1, options.concurrency ?? 5);
   const maxCalls = options.maxCalls ?? 500;
-  const total = plannedCalls(options.items.length, runs);
+  const sides = options.sides ?? ["old", "new"];
+  const total = plannedCalls(options.items.length, runs, sides.length);
   if (total > maxCalls) {
     throw new SpendCapError(`This replay needs ${total} AI calls, above the limit of ${maxCalls}. Lower --runs, use fewer prompts, or raise --max-calls.`);
   }
   const tasks = [];
   for (const item of options.items) {
     for (let run2 = 0; run2 < runs; run2++) {
-      for (const side of ["old", "new"]) {
+      for (const side of sides) {
         const request = requestFor(item, side === "old" ? options.oldModel : options.newModel, options.defaultMaxTokens ?? 1024);
         tasks.push(async () => {
           try {
@@ -555,7 +556,7 @@ function judgeItem(item, records) {
     result.sampleOld = oldOk[0].text;
   if (newOk[0])
     result.sampleNew = newOk[0].text;
-  const add = (code2, severity, detail) => result.reasons.push({ code: code2, severity, detail });
+  const add = (code3, severity, detail) => result.reasons.push({ code: code3, severity, detail });
   if (oldOk.length === 0) {
     result.verdict = "error";
     const oldError = firstError(oldRecords);
@@ -733,6 +734,120 @@ function formatReplayMarkdown(report) {
   return out.join("\n");
 }
 
+// packages/replay/dist/repair.js
+var MAX_SCHEMA_CHARS = 2e3;
+var NO_JSON_MODE = /* @__PURE__ */ new Set(["anthropic"]);
+function repairable(result) {
+  const broken = result.reasons.filter((r) => r.severity === "broken");
+  return result.verdict === "broken" && broken.length > 0 && broken.every((r) => r.code === "format-broken");
+}
+function formatInstruction(item) {
+  const base = "Answer with one JSON value only: no explanation before or after it, no Markdown, no code fences.";
+  if (!item.expect?.schema)
+    return base;
+  const schema = JSON.stringify(item.expect.schema);
+  return schema.length <= MAX_SCHEMA_CHARS ? `${base} It must match this JSON Schema: ${schema}` : base;
+}
+function cell(text) {
+  return text.replace(/\s+/g, " ").replace(/\|/g, "\\|");
+}
+function code(text) {
+  return "`" + text.replace(/\s+/g, " ").replace(/`/g, "'") + "`";
+}
+function candidates(item, newModel) {
+  const systemAddition = formatInstruction(item);
+  const list = [{ kind: "format-instruction", systemAddition }];
+  if (!item.jsonMode && !item.tools?.length && !NO_JSON_MODE.has(parseModelRef(newModel).provider)) {
+    list.push({ kind: "json-mode", systemAddition, jsonMode: true });
+  }
+  return list;
+}
+function applyRepair(item, patch) {
+  const repaired = { ...item, system: item.system ? `${item.system}
+
+${patch.systemAddition}` : patch.systemAddition };
+  if (patch.jsonMode)
+    repaired.jsonMode = true;
+  return repaired;
+}
+function plannedRepairCalls(items, results, newModel, runs) {
+  const byId = new Map(items.map((i) => [i.id, i]));
+  return results.filter(repairable).reduce((sum, r) => sum + candidates(byId.get(r.id), newModel).length * runs, 0);
+}
+async function runRepair(options) {
+  const { items, newModel, runs } = options;
+  const byId = new Map(items.map((i) => [i.id, i]));
+  const targets = options.results.filter(repairable).map((r) => ({ item: byId.get(r.id), tries: candidates(byId.get(r.id), newModel) }));
+  const maxCalls = options.maxCalls ?? 500;
+  const planned = targets.reduce((sum, t) => sum + t.tries.length * runs, 0);
+  if (planned > maxCalls) {
+    throw new SpendCapError(`Prompt Repair could need ${planned} AI calls, above the limit of ${maxCalls}. Lower the runs or raise the limit.`);
+  }
+  const results = new Map(targets.map((t) => [t.item.id, { id: t.item.id, fixed: false, attempts: [] }]));
+  const oldRecords = options.records.filter((r) => r.side === "old");
+  let calls = 0;
+  const rounds = Math.max(0, ...targets.map((t) => t.tries.length));
+  for (let round = 0; round < rounds; round++) {
+    const batch = targets.flatMap((t) => {
+      const patch = t.tries[round];
+      return patch && !results.get(t.item.id).fixed ? [{ original: t.item, patch, repaired: applyRepair(t.item, patch) }] : [];
+    });
+    if (batch.length === 0)
+      break;
+    const records = await runReplay({
+      items: batch.map((b) => b.repaired),
+      // Only the new model is called (sides); the old model's answers come from the replay.
+      oldModel: newModel,
+      newModel,
+      client: options.client,
+      runs,
+      ...options.concurrency ? { concurrency: options.concurrency } : {},
+      maxCalls: maxCalls - calls,
+      sides: ["new"]
+    });
+    calls += records.length;
+    const reference = [...oldRecords, ...records];
+    for (const b of batch) {
+      const judged = judgeItem(b.repaired, reference);
+      const fixed = judged.verdict !== "broken";
+      const format = judged.reasons.find((r) => r.code === "format-broken");
+      const result = results.get(b.original.id);
+      result.attempts.push({
+        kind: b.patch.kind,
+        fixed,
+        detail: fixed ? `passes now (verdict: ${judged.verdict}, ${judged.new.runs - judged.new.errors} of ${judged.new.runs} calls answered)` : format?.detail ?? judged.reasons.find((r) => r.severity === "broken")?.detail ?? "still broken"
+      });
+      if (fixed) {
+        result.fixed = true;
+        result.patch = b.patch;
+      }
+    }
+  }
+  return { newModel, runs, calls, results: [...results.values()] };
+}
+var KIND_LABEL = {
+  "format-instruction": "JSON-only instruction added to the system prompt",
+  "json-mode": "JSON-only instruction plus the provider's JSON mode"
+};
+function formatRepairMarkdown(report) {
+  if (report.results.length === 0)
+    return "";
+  const fixed = report.results.filter((r) => r.fixed);
+  const lines = [
+    "### Prompt Repair",
+    "",
+    `${fixed.length} of ${report.results.length} prompt${report.results.length === 1 ? "" : "s"} with a broken answer format fixed on \`${report.newModel}\` (${report.calls} extra calls, ${report.runs} run${report.runs === 1 ? "" : "s"} per try).`,
+    "",
+    "| Prompt | Result | Tried |",
+    "| --- | --- | --- |",
+    ...report.results.map((r) => `| ${cell(r.id)} | ${r.fixed ? `Fixed: ${KIND_LABEL[r.patch.kind]}` : "Not fixed"} | ${r.attempts.map((a) => cell(`${a.kind}: ${a.detail}`)).join("<br>")} |`)
+  ];
+  for (const r of fixed) {
+    lines.push("", `**Change for ${code(r.id)}:** add this to the end of the system prompt${r.patch.jsonMode ? ', and turn on JSON output (`response_format: {type: "json_object"}` or `responseMimeType: "application/json"`)' : ""}:`, "", "```text", r.patch.systemAddition, "```");
+  }
+  return lines.join("\n");
+}
+
 // packages/scanner/dist/detect.js
 var NOT_MODELS = /* @__PURE__ */ new Set(["claude-code", "claude-desktop", "gemini-cli", "gemini-code-assist"]);
 var GATEWAY_PLATFORMS = {
@@ -819,7 +934,7 @@ function valueSpans(line, kind) {
   }
   return spans;
 }
-function candidates(line, kind) {
+function candidates2(line, kind) {
   const out = [];
   for (const m of line.matchAll(STRING_RE)) {
     if (m[2])
@@ -896,7 +1011,7 @@ function scanText(file, content, kind, apiRules) {
     const lineNo = index + 1;
     const snippet = line.trim().slice(0, 160);
     const seen = /* @__PURE__ */ new Set();
-    for (const candidate of candidates(line, kind)) {
+    for (const candidate of candidates2(line, kind)) {
       const hit = classifyModelId(candidate);
       if (!hit || seen.has(hit.id))
         continue;
@@ -1501,7 +1616,7 @@ function branchName(from, to) {
   const slug = (s) => s.toLowerCase().replace(/[^a-z0-9.\-]+/g, "-").replace(/^-+|-+$/g, "");
   return `ai-change-guard/${slug(from)}-to-${slug(to)}`;
 }
-function code(text) {
+function code2(text) {
   return "`" + text.replace(/\s+/g, " ").slice(0, 200).replace(/`/g, "'") + "`";
 }
 function listed(items, render, more) {
@@ -1525,11 +1640,11 @@ function evidenceBody(plan, replay, scanPath, note) {
     "",
     `### Code changes (${plan.edits.length})`,
     "",
-    ...listed(plan.edits, (e) => `- ${where(e.file, e.line)}: ${code(e.before)} \u2192 ${code(e.after)}`, "(see the Files tab)")
+    ...listed(plan.edits, (e) => `- ${where(e.file, e.line)}: ${code2(e.before)} \u2192 ${code2(e.after)}`, "(see the Files tab)")
   ];
   if (plan.skipped.length > 0) {
     lines.push("", `### Not changed automatically (${plan.skipped.length})`, "");
-    lines.push(...listed(plan.skipped, (s) => `- ${where(s.file, s.line)}: ${code(s.raw)}. ${s.reason}`, "(run `ai-change-guard switch` locally to see all)"));
+    lines.push(...listed(plan.skipped, (s) => `- ${where(s.file, s.line)}: ${code2(s.raw)}. ${s.reason}`, "(run `ai-change-guard switch` locally to see all)"));
   }
   lines.push(
     "",
@@ -1732,18 +1847,38 @@ ${check.summary}`);
     const plan = ids ? await planSwitch(scanRoot, scan.findings, ids.from, ids.to, ids.prefix ? { prefix: ids.prefix } : {}) : void 0;
     const replayFailOn = oneOf(input("replay-fail-on", env) || "broken", "replay-fail-on", ["broken", "changed", "none"]);
     const runs = positive(input("runs", env) || "3", "runs");
+    const repair = oneOf(input("repair", env) || "false", "repair", ["true", "false"]) === "true";
+    const concurrency = positive(input("concurrency", env) || "2", "concurrency");
+    const maxCalls = positive(input("max-calls", env) || "300", "max-calls");
+    const llm = client ?? withRetry(createClient({ env }));
     const items = await loadGoldenSet(resolve(workspace, prompts));
     const records = await runReplay({
       items,
       oldModel,
       newModel,
       runs,
-      concurrency: positive(input("concurrency", env) || "2", "concurrency"),
-      maxCalls: positive(input("max-calls", env) || "300", "max-calls"),
-      client: client ?? withRetry(createClient({ env }))
+      concurrency,
+      maxCalls,
+      client: llm
     });
     const replay = buildReplayReport(items, records, { oldModel, newModel, runs });
     await summary(formatReplayMarkdown(replay));
+    if (repair && replay.items.some(repairable)) {
+      const left = maxCalls - records.length;
+      const needed = plannedRepairCalls(items, replay.items, newModel, runs);
+      if (needed > left) {
+        log(`::warning::AI Change Guard Prompt Repair skipped: it could need ${needed} calls, and only ${left} are left under max-calls ${maxCalls}.`);
+      } else {
+        try {
+          const repaired = await runRepair({ items, records, results: replay.items, newModel, client: llm, runs, concurrency, maxCalls: left });
+          await summary(formatRepairMarkdown(repaired));
+          const fixed = repaired.results.filter((r) => r.fixed).length;
+          log(`AI Change Guard Prompt Repair: ${fixed} of ${repaired.results.length} format breaks fixed (${repaired.calls} extra calls); the fixes are in the Summary`);
+        } catch (error) {
+          log(`::warning::AI Change Guard Prompt Repair failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
     const { broken, changed } = replay.totals;
     const replayFailed = replayFailOn === "broken" && broken > 0 || replayFailOn === "changed" && broken + changed > 0;
     log(`${replayFailed ? "::error::" : ""}AI Change Guard replay: ${replay.totals.same} same, ${changed} changed, ${broken} broken`);
@@ -1780,8 +1915,8 @@ ${check.summary}`);
 }
 if (process.env.GITHUB_ACTIONS === "true") {
   run({ env: process.env, today: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10), log: (line) => console.log(line) }).then(
-    (code2) => {
-      process.exitCode = code2;
+    (code3) => {
+      process.exitCode = code3;
     },
     (error) => {
       console.log(`::error::${error instanceof Error ? error.message : String(error)}`);

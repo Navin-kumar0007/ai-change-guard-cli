@@ -83,3 +83,40 @@ describe("bundled catalog data", () => {
     }
   });
 });
+
+describe("Prompt Repair in the Action", () => {
+  it("shows the fix in the Summary and still fails the step until it is applied", async () => {
+    const client: LlmClient = async (req) => ({
+      text: req.model === "openai:old" || req.system?.includes("Answer with one JSON value only") ? '{"ok": true}' : "Sure! Here you go: ok",
+      toolCalls: [],
+      inputTokens: 10,
+      outputTokens: 5,
+      latencyMs: 1,
+      refused: false,
+    });
+    const files = { "golden.jsonl": '{"id":"a","input":"Reply in JSON","expect":{"json":true}}\n' };
+    const inputs = { prompts: "golden.jsonl", "old-model": "openai:old", "new-model": "openai:new", runs: "2", concurrency: "1", repair: "true" };
+    const { code, lines, summary } = await runAction(files, inputs, client);
+    expect(code).toBe(1);
+    expect(lines).toContain("AI Change Guard Prompt Repair: 1 of 1 format breaks fixed (2 extra calls); the fixes are in the Summary");
+    expect(summary).toContain("### Prompt Repair");
+    expect(summary).toContain("**Change for `a`:** add this to the end of the system prompt:");
+  });
+
+  it("skips repair when max-calls has no room left, and still reports the replay", async () => {
+    const client: LlmClient = async (req) => ({
+      text: req.model === "openai:old" ? '{"ok": true}' : "Sure! Here you go: ok",
+      toolCalls: [],
+      inputTokens: 10,
+      outputTokens: 5,
+      latencyMs: 1,
+      refused: false,
+    });
+    const files = { "golden.jsonl": '{"id":"a","input":"Reply in JSON","expect":{"json":true}}\n' };
+    const inputs = { prompts: "golden.jsonl", "old-model": "openai:old", "new-model": "openai:new", runs: "2", concurrency: "1", "max-calls": "5", repair: "true" };
+    const { code, lines } = await runAction(files, inputs, client);
+    expect(code).toBe(1);
+    expect(lines).toContain("::warning::AI Change Guard Prompt Repair skipped: it could need 4 calls, and only 1 are left under max-calls 5.");
+    expect(lines.at(-1)).toBe("::error::AI Change Guard replay: 0 same, 0 changed, 1 broken");
+  });
+});

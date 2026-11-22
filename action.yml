@@ -32,6 +32,9 @@ inputs:
   replay-fail-on:
     description: "Fail the step when a replayed prompt is: broken, changed, or none."
     default: broken
+  repair:
+    description: "When the new model breaks a prompt's JSON format, try fixes on the new model and show the one that works (true or false). Extra calls count against max-calls."
+    default: "false"
   open-pr:
     description: "After a replay that passes, open a pull request that switches old-model to new-model, with the replay report as proof (true or false). Runs on the default branch only; needs contents: write and pull-requests: write."
     default: "false"
