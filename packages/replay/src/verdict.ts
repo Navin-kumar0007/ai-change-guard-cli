@@ -175,12 +175,14 @@ export function judgeItem(item: GoldenItem, records: RunRecord[]): ItemResult {
 
   const oldTexts = oldOk.map((r) => r.text).filter((t) => t.trim());
   const newTexts = newOk.map((r) => r.text).filter((t) => t.trim());
-  if (!refusalChange && oldTexts.length > 0 && newTexts.length > 0) {
+  // Drift needs at least two old answers: they show how much the old model varies by itself.
+  // With one, any rewording would look like drift.
+  if (!refusalChange && oldTexts.length > 1 && newTexts.length > 0) {
     const pairs: number[] = [];
     for (let i = 0; i < oldTexts.length; i++) {
       for (let j = i + 1; j < oldTexts.length; j++) pairs.push(similarity(oldTexts[i]!, oldTexts[j]!));
     }
-    const oldSelf = pairs.length > 0 ? average(pairs) : 1;
+    const oldSelf = average(pairs);
     const cross = newTexts.map((t) => Math.max(...oldTexts.map((o) => similarity(t, o))));
     const drifted = cross.filter((c) => c < oldSelf * 0.7).length;
     if (drifted >= atLeast(newTexts.length, 0.6)) {

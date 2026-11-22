@@ -260,3 +260,25 @@ describe("report", () => {
     expect(md).toContain("**BROKEN: broken-one**");
   });
 });
+
+describe("answer drift needs a baseline", () => {
+  it("does not judge drift from a single old answer, but does from two or more", async () => {
+    const { judgeItem: judge } = await import("../src/verdict.js");
+    const item = { id: "a", messages: [{ role: "user" as const, content: "hi" }] };
+    const answer = (side: "old" | "new", run: number, text: string) => ({
+      itemId: "a",
+      side,
+      run,
+      response: { text, toolCalls: [], inputTokens: 1, outputTokens: 1, latencyMs: 1, refused: false },
+    });
+    const one = judge(item, [answer("old", 0, "Your refund is on its way today."), answer("new", 0, "We have started processing the return for you.")]);
+    expect(one.verdict).toBe("same");
+    const two = judge(item, [
+      answer("old", 0, "Your refund is on its way today."),
+      answer("old", 1, "Your refund is on its way today."),
+      answer("new", 0, "We have started processing the return for you."),
+      answer("new", 1, "We have started processing the return for you."),
+    ]);
+    expect(two.reasons.map((r) => r.code)).toEqual(["answer-drift"]);
+  });
+});

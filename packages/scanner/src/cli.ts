@@ -126,7 +126,8 @@ async function replayCommand(args: string[]): Promise<number> {
   const items = await loadGoldenSet(resolve(set));
   const total = plannedCalls(items.length, runs);
   if (format === "text") {
-    console.error(`${items.length} prompts × ${runs} runs × 2 models = ${total} calls on your API keys.`);
+    console.error(`${items.length} prompt${items.length === 1 ? "" : "s"} × ${runs} run${runs === 1 ? "" : "s"} × 2 models = ${total} calls on your API keys.`);
+    if (runs === 1) console.error("With --runs 1 answer drift is not judged; use 2 or more runs to catch reworded answers.");
     if (repair) console.error(`--repair may use the rest of --max-calls (${maxCalls - total} calls) on prompts whose JSON format breaks.`);
     if (items.length < 20) console.error("Tip: 20–50 real prompts give a far more reliable result.");
   }
