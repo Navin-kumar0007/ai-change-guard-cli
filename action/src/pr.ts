@@ -113,7 +113,7 @@ export function evidenceBody(plan: SwitchPlan, replay: ReplayReport, scanPath: s
     "",
   );
   const top = lines.join("\n");
-  const open = "<details><summary>Full replay report</summary>\n\n";
+  const open = "\n<details><summary>Full replay report</summary>\n\n";
   const close = "\n\n</details>";
   const cut = "\n\n…cut to fit GitHub's limit; the full report is in the workflow run's Summary.";
   let report = formatReplayMarkdown(replay);
@@ -191,7 +191,7 @@ export async function openEvidencePr(input: EvidencePrInput): Promise<EvidencePr
   const owner = repo.split("/")[0];
   const t = replay.totals;
   const subject = `Switch ${plan.from} to ${plan.to}`;
-  const message = `${subject}\n\nReplayed ${replay.items.length} prompts x ${replay.runs} runs with AI Change Guard: ${t.same} same, ${t.changed} changed, ${t.broken} broken.`;
+  const message = `${subject}\n\nReplayed ${replay.items.length} prompt${replay.items.length === 1 ? "" : "s"} x ${replay.runs} run${replay.runs === 1 ? "" : "s"} with AI Change Guard: ${t.same} same, ${t.changed} changed, ${t.broken} broken.`;
   const body = evidenceBody(plan, replay, input.scanPath);
 
   const listPulls = () =>
@@ -250,7 +250,7 @@ export async function openEvidencePr(input: EvidencePrInput): Promise<EvidencePr
 
     try {
       const pr = await api<{ number: number; html_url: string }>("POST", `/repos/${repo}/pulls`, {
-        title: `${subject} (tested on ${replay.items.length} real prompts)`,
+        title: `${subject} (tested on ${replay.items.length} real prompt${replay.items.length === 1 ? "" : "s"})`,
         head: branch,
         base,
         body,

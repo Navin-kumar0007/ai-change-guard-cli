@@ -101,7 +101,7 @@ const LABEL: Record<Verdict, string> = { broken: "BROKEN ", changed: "CHANGED", 
 export function formatReplayText(report: ReplayReport): string {
   const t = report.totals;
   const out: string[] = [];
-  out.push(`Replay: ${report.oldModel} → ${report.newModel} · ${report.items.length} prompts × ${report.runs} runs · ${report.calls} calls (${report.failedCalls} failed)`);
+  out.push(`Replay: ${report.oldModel} → ${report.newModel} · ${report.items.length} prompt${report.items.length === 1 ? "" : "s"} × ${report.runs} run${report.runs === 1 ? "" : "s"} · ${report.calls} calls (${report.failedCalls} failed)`);
   out.push(`Verdict: ${t.same} same · ${t.changed} changed · ${t.broken} broken · ${t.error} could not compare`);
   const o = report.avgTokens.old;
   const n = report.avgTokens.new;
@@ -144,7 +144,7 @@ export function formatReplayMarkdown(report: ReplayReport): string {
   const out: string[] = [
     `## Model switch check: \`${report.oldModel}\` → \`${report.newModel}\``,
     "",
-    `${report.items.length} real prompts, ${report.runs} runs each on both models.`,
+    `${report.items.length} real prompt${report.items.length === 1 ? "" : "s"}, ${report.runs} run${report.runs === 1 ? "" : "s"} each on both models.`,
     "",
     "| Same | Changed | Broken | Could not compare |",
     "| --- | --- | --- | --- |",

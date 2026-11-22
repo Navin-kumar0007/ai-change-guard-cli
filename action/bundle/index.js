@@ -710,7 +710,7 @@ function formatReplayMarkdown(report) {
   const out = [
     `## Model switch check: \`${report.oldModel}\` \u2192 \`${report.newModel}\``,
     "",
-    `${report.items.length} real prompts, ${report.runs} runs each on both models.`,
+    `${report.items.length} real prompt${report.items.length === 1 ? "" : "s"}, ${report.runs} run${report.runs === 1 ? "" : "s"} each on both models.`,
     "",
     "| Same | Changed | Broken | Could not compare |",
     "| --- | --- | --- | --- |",
@@ -1656,7 +1656,7 @@ function evidenceBody(plan, replay, scanPath, note) {
     ""
   );
   const top = lines.join("\n");
-  const open = "<details><summary>Full replay report</summary>\n\n";
+  const open = "\n<details><summary>Full replay report</summary>\n\n";
   const close = "\n\n</details>";
   const cut = "\n\n\u2026cut to fit GitHub's limit; the full report is in the workflow run's Summary.";
   let report = formatReplayMarkdown(replay);
@@ -1716,7 +1716,7 @@ async function openEvidencePr(input2) {
   const subject = `Switch ${plan.from} to ${plan.to}`;
   const message = `${subject}
 
-Replayed ${replay.items.length} prompts x ${replay.runs} runs with AI Change Guard: ${t.same} same, ${t.changed} changed, ${t.broken} broken.`;
+Replayed ${replay.items.length} prompt${replay.items.length === 1 ? "" : "s"} x ${replay.runs} run${replay.runs === 1 ? "" : "s"} with AI Change Guard: ${t.same} same, ${t.changed} changed, ${t.broken} broken.`;
   const body = evidenceBody(plan, replay, input2.scanPath);
   const listPulls = () => api("GET", `/repos/${repo}/pulls?state=all&per_page=20&head=${encodeURIComponent(`${owner}:${branch}`)}`);
   const ownsBranch = async () => {
@@ -1766,7 +1766,7 @@ Replayed ${replay.items.length} prompts x ${replay.runs} runs with AI Change Gua
     }
     try {
       const pr = await api("POST", `/repos/${repo}/pulls`, {
-        title: `${subject} (tested on ${replay.items.length} real prompts)`,
+        title: `${subject} (tested on ${replay.items.length} real prompt${replay.items.length === 1 ? "" : "s"})`,
         head: branch,
         base,
         body

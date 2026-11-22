@@ -127,7 +127,7 @@ describe("evidence pull request", () => {
     expect(calls.find((c) => c.path.endsWith("/git/refs"))!.body).toEqual({ ref: `refs/heads/${BRANCH}`, sha: "new-commit" });
 
     const pr = calls.find((c) => c.method === "POST" && c.path === "/repos/acme/bot/pulls")!.body;
-    expect(pr).toMatchObject({ head: BRANCH, base: "main", title: "Switch gpt-4o to gpt-6-luna (tested on 1 real prompts)" });
+    expect(pr).toMatchObject({ head: BRANCH, base: "main", title: "Switch gpt-4o to gpt-6-luna (tested on 1 real prompt)" });
     expect(pr.body).toContain("| 1 | 0 | 0 | 0 |");
     expect(pr.body).toContain("`src/bot.py:2`");
     expect(pr.body).toMatch(/<summary>Full replay report<\/summary>[\s\S]*<\/details>$/);
