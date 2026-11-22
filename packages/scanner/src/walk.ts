@@ -60,6 +60,8 @@ const CONFIG_EXTENSIONS = new Set([".yaml", ".yml", ".json", ".toml", ".ini", ".
 export function fileKind(name: string): FileKind | null {
   const base = basename(name);
   if (base === ".env" || base.startsWith(".env.")) return "config";
+  // Python dependency pins: requirements.txt, requirements-dev.txt, ...
+  if (/^requirements[\w.-]*\.txt$/i.test(base)) return "config";
   if (base.endsWith(".min.js")) return null;
   const ext = extname(base).toLowerCase();
   if (CODE_EXTENSIONS.has(ext)) return "code";

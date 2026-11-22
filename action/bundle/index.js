@@ -1277,6 +1277,8 @@ function fileKind(name) {
   const base = basename(name);
   if (base === ".env" || base.startsWith(".env."))
     return "config";
+  if (/^requirements[\w.-]*\.txt$/i.test(base))
+    return "config";
   if (base.endsWith(".min.js"))
     return null;
   const ext = extname(base).toLowerCase();

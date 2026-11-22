@@ -57,6 +57,197 @@
           "checked": "2026-11-18"
         }
       ]
+    },
+    {
+      "id": "openai-audio-translations",
+      "provider": "openai",
+      "name": "OpenAI audio translations endpoint (/v1/audio/translations)",
+      "patterns": [
+        "/v1/audio/translations\\b",
+        "\\baudio\\.translations\\.create\\b"
+      ],
+      "retiresOn": "2027-02-26",
+      "replacement": "/v1/realtime/translations",
+      "verified": true,
+      "sources": [
+        {
+          "url": "https://developers.openai.com/api/docs/deprecations",
+          "checked": "2026-11-23"
+        }
+      ]
+    },
+    {
+      "id": "openai-fine-tuning-job-creation",
+      "provider": "openai",
+      "name": "OpenAI self-serve fine-tuning job creation",
+      "patterns": [
+        "\\bfine_tuning\\.jobs\\.create\\b",
+        "/v1/fine_tuning/jobs\\b"
+      ],
+      "retiresOn": "2027-01-06",
+      "verified": true,
+      "note": "New fine-tuning jobs can no longer be created after this date, even by active customers; access was already restricted from May and July 2026. Existing fine-tuned models are covered by their own model dates.",
+      "sources": [
+        {
+          "url": "https://developers.openai.com/api/docs/deprecations",
+          "checked": "2026-11-23"
+        }
+      ]
+    },
+    {
+      "id": "openai-videos-api",
+      "provider": "openai",
+      "name": "OpenAI Videos API (/v1/videos)",
+      "patterns": [
+        "api\\.openai\\.com/v1/videos\\b",
+        "[\"'`]/v1/videos\\b",
+        "\\bopenai\\.videos\\."
+      ],
+      "retiresOn": "2026-09-24",
+      "replacement": "No one-to-one replacement",
+      "verified": true,
+      "sources": [
+        {
+          "url": "https://developers.openai.com/api/docs/deprecations",
+          "checked": "2026-11-23"
+        }
+      ]
+    },
+    {
+      "id": "openai-realtime-beta-header",
+      "provider": "openai",
+      "name": "OpenAI Realtime API beta interface (OpenAI-Beta: realtime=v1)",
+      "patterns": [
+        "\\brealtime=v1\\b"
+      ],
+      "retiresOn": "2026-05-12",
+      "replacement": "Realtime API GA interface",
+      "verified": true,
+      "sources": [
+        {
+          "url": "https://developers.openai.com/api/docs/deprecations",
+          "checked": "2026-11-23"
+        }
+      ]
+    },
+    {
+      "id": "openai-assistants-v1-header",
+      "provider": "openai",
+      "name": "OpenAI Assistants v1 beta header (OpenAI-Beta: assistants=v1)",
+      "patterns": [
+        "\\bassistants=v1\\b"
+      ],
+      "retiresOn": "2024-12-18",
+      "replacement": "Responses API (assistants=v2 itself shut down with the Assistants API)",
+      "verified": true,
+      "sources": [
+        {
+          "url": "https://developers.openai.com/api/docs/deprecations",
+          "checked": "2026-11-23"
+        }
+      ]
+    },
+    {
+      "id": "openai-legacy-endpoints",
+      "provider": "openai",
+      "name": "OpenAI legacy endpoints (/v1/edits, /v1/fine-tunes)",
+      "patterns": [
+        "/v1/edits\\b",
+        "/v1/fine-tunes\\b",
+        "\\bopenai\\.Edit\\.create\\b",
+        "\\bopenai\\.FineTune\\."
+      ],
+      "retiresOn": "2024-01-04",
+      "replacement": "/v1/chat/completions and /v1/fine_tuning/jobs",
+      "verified": true,
+      "sources": [
+        {
+          "url": "https://developers.openai.com/api/docs/deprecations",
+          "checked": "2026-11-23"
+        }
+      ]
+    },
+    {
+      "id": "openai-engines-and-search-endpoints",
+      "provider": "openai",
+      "name": "OpenAI engines, search, answers and classifications endpoints",
+      "patterns": [
+        "/v1/engines\\b",
+        "/v1/answers\\b",
+        "/v1/classifications\\b",
+        "\\bopenai\\.Engine\\.",
+        "\\bopenai\\.Answer\\.",
+        "\\bopenai\\.Classification\\."
+      ],
+      "retiresOn": "2022-12-03",
+      "replacement": "/v1/models, embeddings-based search, chat completions",
+      "verified": true,
+      "sources": [
+        {
+          "url": "https://developers.openai.com/api/docs/deprecations",
+          "checked": "2026-11-23"
+        }
+      ]
+    },
+    {
+      "id": "google-generativeai-python-sdk",
+      "provider": "google",
+      "name": "Legacy Google AI Python SDK (google-generativeai)",
+      "patterns": [
+        "\\bimport\\s+google\\.generativeai\\b",
+        "\\bfrom\\s+google\\.generativeai\\b",
+        "\\bfrom\\s+google\\s+import\\s+generativeai\\b",
+        "^\\s*[\"']?google-generativeai\\b"
+      ],
+      "retiresOn": "2025-11-30",
+      "replacement": "google-genai (Google Gen AI SDK)",
+      "verified": false,
+      "note": "End of support: the archived GitHub repository says 30 Nov 2025, the PyPI page says 31 Aug 2025. Either way it no longer gets fixes.",
+      "sources": [
+        {
+          "url": "https://github.com/google-gemini/deprecated-generative-ai-python",
+          "checked": "2026-11-23"
+        },
+        {
+          "url": "https://pypi.org/project/google-generativeai/",
+          "checked": "2026-11-23"
+        }
+      ]
+    },
+    {
+      "id": "google-generative-ai-js-sdk",
+      "provider": "google",
+      "name": "Legacy Google AI JavaScript SDK (@google/generative-ai)",
+      "patterns": [
+        "@google/generative-ai\\b"
+      ],
+      "retiresOn": "2025-11-30",
+      "replacement": "@google/genai (Google Gen AI SDK)",
+      "verified": true,
+      "sources": [
+        {
+          "url": "https://github.com/google-gemini/deprecated-generative-ai-js",
+          "checked": "2026-11-23"
+        }
+      ]
+    },
+    {
+      "id": "vertex-ai-sdk-generative-module",
+      "provider": "google",
+      "name": "Generative AI module of the Vertex AI SDK (vertexai.generative_models)",
+      "patterns": [
+        "\\bvertexai\\.(?:preview\\.)?generative_models\\b"
+      ],
+      "retiresOn": "2026-06-24",
+      "replacement": "google-genai (Google Gen AI SDK)",
+      "verified": true,
+      "note": "Deprecated 24 Jun 2025 and removed 24 Jun 2026 from the Vertex AI SDK for Python.",
+      "sources": [
+        {
+          "url": "https://docs.cloud.google.com/vertex-ai/generative-ai/docs/deprecations",
+          "checked": "2026-11-23"
+        }
+      ]
     }
   ]
 }
