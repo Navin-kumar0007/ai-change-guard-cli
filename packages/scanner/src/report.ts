@@ -7,7 +7,18 @@ import {
   type Provider,
 } from "@ai-change-guard/catalog";
 import type { ScanResult } from "./scan.js";
+import { SECURITY_RULES, type SecurityRule } from "./security.js";
 import { TOKEN_RULES, type TokenRule } from "./tokens.js";
+
+export interface SecurityRow {
+  rule: SecurityRule;
+  title: string;
+  owasp: string;
+  severity: "high" | "medium" | "review";
+  why: string;
+  fix: string;
+  findings: { location: string; detail: string }[];
+}
 
 export interface TokenTipRow {
   rule: TokenRule;
@@ -56,7 +67,11 @@ export interface Report {
   dynamic: { location: string; snippet: string }[];
   apis: ApiRow[];
   tokenTips: TokenTipRow[];
+  /** AI Security Check (advisory). Missing in reports stored before it existed. */
+  security?: SecurityRow[];
 }
+
+const SEVERITY_ORDER = { high: 0, medium: 1, review: 2 } as const;
 
 const STATUS_ORDER: Record<RowStatus, number> = {
   retired: 0,
@@ -164,6 +179,17 @@ export function buildReport(result: ScanResult, target: string, today: string): 
   }
   const tokenTips = [...tipRows.values()].sort((a, b) => b.locations.length - a.locations.length);
 
+  const securityRows = new Map<SecurityRule, SecurityRow>();
+  for (const f of result.security ?? []) {
+    let row = securityRows.get(f.rule);
+    if (!row) {
+      row = { rule: f.rule, ...SECURITY_RULES[f.rule], findings: [] };
+      securityRows.set(f.rule, row);
+    }
+    row.findings.push({ location: `${f.file}:${f.line}`, detail: f.detail });
+  }
+  const security = [...securityRows.values()].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || b.findings.length - a.findings.length);
+
   return {
     target,
     today,
@@ -174,6 +200,7 @@ export function buildReport(result: ScanResult, target: string, today: string): 
     dynamic,
     apis: apiRows,
     tokenTips,
+    security,
   };
 }
 
@@ -217,7 +244,9 @@ export function formatText(report: Report): string {
   if (report.models.length === 0 && report.dynamic.length === 0 && report.apis.length === 0) {
     out.push("No AI model IDs found in code or config.");
     out.push("If this app uses AI, the model may be set in a database, a dashboard or a gateway config. Check there.");
-    return out.join("\n");
+    // Security findings (an exposed key, an unpinned MCP server) matter even without model IDs.
+    if (!report.security?.length) return out.join("\n");
+    out.push("");
   }
 
   if (report.models.length > 0) {
@@ -255,6 +284,17 @@ export function formatText(report: Report): string {
       out.push(`  ${t.title}  ${whereLabel(t.locations)}`);
       out.push(`    fix: ${t.fix}`);
       out.push(`    why: ${t.saving}`);
+    }
+    out.push("");
+  }
+
+  if (report.security?.length) {
+    out.push("AI security check (advisory; OWASP Top 10 for LLM and agentic apps)");
+    for (const s of report.security) {
+      out.push(`  ${s.severity.toUpperCase()}  ${s.title} [${s.owasp}]`);
+      for (const f of s.findings.slice(0, 10)) out.push(`    ${f.location}  ${f.detail}`);
+      if (s.findings.length > 10) out.push(`    ... and ${s.findings.length - 10} more`);
+      out.push(`    fix: ${s.fix}`);
     }
     out.push("");
   }

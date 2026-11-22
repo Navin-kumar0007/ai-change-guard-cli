@@ -98,6 +98,7 @@ export function createServer(options: ServerOptions = {}): McpServer {
         const fix = (file: string) => (prefix ? posix.join(prefix, file) : file);
         scan.findings = scan.findings.map((f) => ({ ...f, file: fix(f.file) }));
         scan.tokenTips = scan.tokenTips.map((t) => ({ ...t, file: fix(t.file) }));
+        scan.security = scan.security.map((s) => ({ ...s, file: fix(s.file) }));
         const report = buildReport(scan, prefix || ".", today());
         const summary = report.models.map((m) => ({
           model: m.id,
@@ -109,7 +110,11 @@ export function createServer(options: ServerOptions = {}): McpServer {
           dateVerified: m.verified,
           locations: m.locations,
         }));
-        return text(formatText(report), JSON.stringify({ models: summary, apis: report.apis, dynamicModelIds: report.dynamic.map((d) => d.location) }, null, 2));
+        const security = (report.security ?? []).map((s) => ({ rule: s.rule, title: s.title, owasp: s.owasp, severity: s.severity, fix: s.fix, findings: s.findings }));
+        return text(
+          formatText(report),
+          JSON.stringify({ models: summary, apis: report.apis, security, dynamicModelIds: report.dynamic.map((d) => d.location) }, null, 2),
+        );
       } catch (error) {
         return fail(`Scan failed: ${error instanceof Error ? error.message : String(error)}`);
       }

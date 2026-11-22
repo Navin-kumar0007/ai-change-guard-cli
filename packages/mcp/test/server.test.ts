@@ -175,4 +175,15 @@ describe("MCP server", () => {
       if (before !== undefined) process.env.ACG_ROOT = before;
     }
   });
+
+  it("returns security findings in the JSON, with paths from the project root", async () => {
+    const mcp = JSON.stringify({ mcpServers: { fs: { command: "npx", args: ["-y", "some-mcp"] } } });
+    const client = await connect(await project({ "apps/web/.cursor/mcp.json": mcp }));
+    const r = await call(client, "scan_ai_models", { path: "apps/web" });
+    const json = JSON.parse(r.text.slice(r.text.indexOf('{\n  "models"')));
+    expect(json.security).toEqual([
+      expect.objectContaining({ rule: "unpinned-mcp-server", findings: [{ location: "apps/web/.cursor/mcp.json:1", detail: "fs: some-mcp" }] }),
+    ]);
+  });
 });
+

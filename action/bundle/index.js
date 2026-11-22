@@ -1095,129 +1095,8 @@ function lookupModel(id) {
   return models.filter((m) => m.id === id);
 }
 
-// packages/scanner/dist/tokens.js
-var TOKEN_RULES = {
-  "no-output-limit": {
-    title: "No output limit on the AI call",
-    fix: "Set max_tokens / max_output_tokens to the longest answer you actually need.",
-    saving: "Caps runaway answers; output tokens usually cost several times more than input tokens."
-  },
-  "no-prompt-caching": {
-    title: "System prompt sent without prompt caching (Anthropic)",
-    fix: 'Add cache_control: {"type": "ephemeral"} to the fixed system prompt block.',
-    saving: "Cached input is billed at a fraction of the normal input price on repeat calls (check current Anthropic pricing)."
-  },
-  "cache-breaker": {
-    title: "Changing value inside the system prompt",
-    fix: "Move dates, times and IDs out of the system prompt and into the end of the user message.",
-    saving: "Keeps the prompt prefix identical so provider prompt caching can apply."
-  },
-  "loop-not-batched": {
-    title: "AI calls made one by one in a loop",
-    fix: "If results aren't needed instantly, send the loop through the provider's Batch API.",
-    saving: "Batch APIs are often around half price (confirm each provider's current discount)."
-  },
-  "json-without-structured-output": {
-    title: "JSON parsed from free-text AI output",
-    fix: "Ask for structured output (response_format / JSON schema / responseMimeType) instead of parsing text.",
-    saving: "Shorter answers and fewer retries when the JSON comes back broken."
-  }
-};
-var CALL_RE = /\b(?:chat\.completions\.create|responses\.create|messages\.(?:create|stream)|generate_?[cC]ontent|generateText|streamText)\s*\(/;
-var ANTHROPIC_CALL_RE = /\bmessages\.(?:create|stream)\s*\(/;
-var OUTPUT_LIMIT_RE = /\b(?:max_tokens|max_completion_tokens|max_output_tokens|maxTokens|maxOutputTokens|maxCompletionTokens)\b/;
-var SPREAD_RE = /\*\*\w|\.\.\.\w/;
-var SYSTEM_PARAM_RE = /\bsystem\s*[=:]/;
-var PROMPT_VAR_RE = /\b(?:system(?:_prompt|Prompt)?|instructions)\b\s*[=:]/;
-var CHANGING_VALUE_RE = /\b(?:datetime\.(?:now|utcnow)|date\.today|time\.time|Date\.now)\s*\(|\bnew Date\s*\(|\buuid\d?\s*\(/;
-var LOOP_RE = /^\s*(?:for\s|async for\s|while\s|for\s*\()|\.(?:map|forEach)\s*\(/;
-var FUNCTION_START_RE = /^\s*(?:def |async def |function |class |export )/;
-var JSON_PARSE_RE = /\b(?:json\.loads|JSON\.parse)\s*\(/;
-var AI_OUTPUT_RE = /\bchoices\s*\[|\boutput_text\b|\bmessage\.content\b|\.content\s*\[\s*\d+\s*\]\s*\.text\b|\bresponse\.text\b|\bcompletion\.text\b/;
-var EMPTY_ARGS_RE = /^\(\s*\)/;
-var TRIPLE_QUOTE_RE = /"""|'''/g;
-var STRUCTURED_RE = /\b(?:response_format|json_schema|responseMimeType|response_mime_type|responseSchema|response_schema|generateObject|zodResponseFormat|text_format|output_format|tool_choice)\b/;
-var COMMENT_LINE_RE2 = /^\s*(?:#|\/\/|\/\*|\*|--)/;
-function callBlock(lines, start, column) {
-  let depth = 0;
-  const parts = [];
-  for (let i = start; i < lines.length && i < start + 40; i++) {
-    const text = i === start ? (lines[i] ?? "").slice(column) : lines[i] ?? "";
-    parts.push(text);
-    for (const ch of text) {
-      if (ch === "(")
-        depth++;
-      else if (ch === ")") {
-        depth--;
-        if (depth === 0)
-          return parts.join("\n");
-      }
-    }
-  }
-  return parts.join("\n");
-}
-function indentOf(line) {
-  return line.length - line.trimStart().length;
-}
-function insideLoop(lines, index, column) {
-  const line = lines[index] ?? "";
-  if (LOOP_RE.test(line.slice(0, column)))
-    return true;
-  const indent = indentOf(line);
-  for (let j = index - 1; j >= 0 && j >= index - 8; j--) {
-    const prev = lines[j] ?? "";
-    if (prev.trim() === "")
-      continue;
-    if (indentOf(prev) >= indent)
-      continue;
-    if (LOOP_RE.test(prev))
-      return true;
-    if (FUNCTION_START_RE.test(prev))
-      return false;
-  }
-  return false;
-}
-function findTokenTips(file, content, kind) {
-  if (kind !== "code")
-    return [];
-  const lines = content.split(/\r?\n/);
-  const tips = [];
-  const usesBatch = /batch/i.test(content);
-  const usesCacheControl = /cache_control|cacheControl/.test(content);
-  const usesStructuredOutput = STRUCTURED_RE.test(content);
-  let cacheTipGiven = false;
-  let jsonTipGiven = false;
-  let inDocstring = false;
-  lines.forEach((line, index) => {
-    const quoteCount = (line.match(TRIPLE_QUOTE_RE) ?? []).length;
-    const wasInDocstring = inDocstring;
-    if (quoteCount % 2 === 1)
-      inDocstring = !inDocstring;
-    if (wasInDocstring || quoteCount > 0 || COMMENT_LINE_RE2.test(line))
-      return;
-    const tip = (rule) => tips.push({ file, line: index + 1, rule, snippet: line.trim().slice(0, 160) });
-    const call = CALL_RE.exec(line);
-    if (call && !EMPTY_ARGS_RE.test(line.slice(call.index + call[0].length - 1))) {
-      const column = call.index + call[0].length - 1;
-      const block = callBlock(lines, index, column);
-      if (!OUTPUT_LIMIT_RE.test(block) && !SPREAD_RE.test(block))
-        tip("no-output-limit");
-      if (!usesCacheControl && !cacheTipGiven && ANTHROPIC_CALL_RE.test(line) && SYSTEM_PARAM_RE.test(block)) {
-        tip("no-prompt-caching");
-        cacheTipGiven = true;
-      }
-      if (!usesBatch && insideLoop(lines, index, call.index))
-        tip("loop-not-batched");
-    }
-    if (PROMPT_VAR_RE.test(line) && CHANGING_VALUE_RE.test(line))
-      tip("cache-breaker");
-    if (!usesStructuredOutput && !jsonTipGiven && JSON_PARSE_RE.test(line) && AI_OUTPUT_RE.test(line)) {
-      tip("json-without-structured-output");
-      jsonTipGiven = true;
-    }
-  });
-  return tips;
-}
+// packages/scanner/dist/security.js
+import { basename as basename2 } from "node:path";
 
 // packages/scanner/dist/walk.js
 import { readdir } from "node:fs/promises";
@@ -1317,6 +1196,528 @@ async function* walk(root) {
   }
 }
 
+// packages/scanner/dist/prompts.js
+var MIN_CHARS = 30;
+var MAX_CHARS = 8e3;
+var Q3 = "'''";
+var OPEN = String.raw`([rRfFbBuU]{0,2})("""|` + Q3 + String.raw`|\x60|"|')`;
+var STARTS = [
+  // NAME = "...", NAME: str = "...", const NAME = `...`
+  new RegExp(String.raw`\b((?:[A-Za-z_$][\w$]*)?(?:system|prompt|instruction|persona)[\w$]*)\s*(?::\s*[\w.\[\], |]+?)?\s*=\s*\(?\s*` + OPEN, "gi"),
+  // system="...", instructions: "...", {"system": "..."}, systemInstruction: "..."
+  new RegExp(String.raw`["']?\b(system|instructions|system_instruction|systemInstruction|system_prompt|systemPrompt)\b["']?\s*[:=]\s*\(?\s*` + OPEN, "g"),
+  // {"role": "system", "content": "..."}
+  new RegExp(String.raw`["']?role["']?\s*[:=]\s*["'](?:system|developer)["']\s*,\s*["']?(content)["']?\s*[:=]\s*` + OPEN, "g")
+];
+var NEXT_LITERAL = new RegExp(String.raw`^\s*(\+)?\s*` + OPEN);
+var JOINED_WITH_CODE = /^\s*\+\s*[A-Za-z_$(]/;
+var USER_SIDE_NAME = /user|human|template|question|query|input|message/i;
+var SYSTEM_NAME = /system|instruction|persona/i;
+var JSON_SIGNS = /response_format|json_object|json_schema|responseMimeType|response_mime_type|application\/json|json\.loads\(|JSON\.parse\(|with_structured_output|zodResponseFormat/;
+function readLiteral(content, start, quote, raw) {
+  const multi = quote.length === 3 || quote === "`";
+  let i = start;
+  let text = "";
+  while (i < content.length) {
+    const c = content[i];
+    if (c === "\\" && !raw) {
+      const next = content[i + 1] ?? "";
+      const simple = { n: "\n", t: "	", r: "\r", "\\": "\\", "'": "'", '"': '"', "`": "`", "\n": "" };
+      if (next in simple) {
+        text += simple[next];
+        i += 2;
+      } else if (next === "u" && /^[0-9a-fA-F]{4}$/.test(content.slice(i + 2, i + 6))) {
+        text += String.fromCharCode(parseInt(content.slice(i + 2, i + 6), 16));
+        i += 6;
+      } else {
+        text += c;
+        i++;
+      }
+      continue;
+    }
+    if (raw && c === "\\" && content[i + 1] === quote[0] && quote.length === 1) {
+      text += c + quote;
+      i += 2;
+      continue;
+    }
+    if (content.startsWith(quote, i))
+      return { text, end: i + quote.length };
+    if (c === "\n" && !multi)
+      return null;
+    text += c;
+    i++;
+  }
+  return null;
+}
+function readJoined(content, start, prefix, quote, goRaw) {
+  const raw = (q, p) => /r/i.test(p) || goRaw && q === "`";
+  let lit = readLiteral(content, start, quote, raw(quote, prefix));
+  if (!lit)
+    return null;
+  let text = lit.text;
+  for (let guard = 0; guard < 50; guard++) {
+    const rest = content.slice(lit.end, lit.end + 2e3);
+    const next = NEXT_LITERAL.exec(rest);
+    if (!next)
+      return { text, partial: JOINED_WITH_CODE.test(rest) };
+    const nextLit = readLiteral(content, lit.end + next[0].length, next[3], raw(next[3], next[2]));
+    if (!nextLit)
+      return { text, partial: false };
+    text += nextLit.text;
+    lit = nextLit;
+  }
+  return { text, partial: false };
+}
+function dedent(text) {
+  const lines = text.replace(/^\n/, "").split("\n");
+  const indents = lines.filter((l) => l.trim()).map((l) => /^[ \t]*/.exec(l)[0].length);
+  const cut = indents.length ? Math.min(...indents) : 0;
+  return lines.map((l) => l.slice(cut)).join("\n").trim();
+}
+function lineIndex(content) {
+  const starts = [0];
+  for (let i = 0; i < content.length; i++)
+    if (content.charCodeAt(i) === 10)
+      starts.push(i + 1);
+  return (offset) => {
+    let lo = 0;
+    let hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = lo + hi + 1 >> 1;
+      if (starts[mid] <= offset)
+        lo = mid;
+      else
+        hi = mid - 1;
+    }
+    return lo + 1;
+  };
+}
+function findPromptsInText(file, content) {
+  if (!isAiContent(content))
+    return [];
+  const lineAt = lineIndex(content);
+  const goRaw = file.endsWith(".go");
+  const found = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const re of STARTS) {
+    for (const m of content.matchAll(re)) {
+      const name = m[1];
+      const prefix = m[2];
+      const quote = m[3];
+      const open = m.index + m[0].length;
+      if (seen.has(open))
+        continue;
+      seen.add(open);
+      if (USER_SIDE_NAME.test(name) && !SYSTEM_NAME.test(name))
+        continue;
+      const joined = readJoined(content, open, prefix, quote, goRaw);
+      if (!joined)
+        continue;
+      const text = dedent(joined.text);
+      if (text.length < MIN_CHARS || text.length > MAX_CHARS || !/\s/.test(text))
+        continue;
+      const templated = /\$\{[^}]+\}|\{[A-Za-z_][\w.]*\}/.test(text);
+      if (templated && !/system|instruction|persona|content/i.test(name))
+        continue;
+      found.push({ file, line: lineAt(m.index), name, text, json: false, templated, partial: joined.partial });
+    }
+  }
+  const fileParsesJson = JSON_SIGNS.test(content);
+  for (const p of found)
+    p.json = /\bjson\b/i.test(p.text) || fileParsesJson && found.length === 1;
+  return found.sort((a, b) => a.line - b.line);
+}
+
+// packages/scanner/dist/security.js
+var SECURITY_RULES = {
+  "ai-key-exposed": {
+    title: "AI API key exposed in code or the browser",
+    owasp: "LLM02",
+    severity: "high",
+    why: "Anyone who sees the code or the web page can use the key and run up your bill; stolen AI keys are sold and abused within hours.",
+    fix: "Revoke the key now, keep keys in server-side environment variables, and call the AI API from your backend only."
+  },
+  "model-output-to-sink": {
+    title: "Model output passed to eval, a shell, SQL or raw HTML",
+    owasp: "LLM05",
+    severity: "high",
+    why: "Text from the model can be steered by anyone who controls the prompt or the documents it reads, so it can become code, commands or script.",
+    fix: "Treat model output as untrusted input: parse it into a fixed structure, use parameterised queries, allow-list commands, and escape HTML."
+  },
+  "user-input-in-system-prompt": {
+    title: "User input placed inside the system prompt",
+    owasp: "LLM01",
+    severity: "medium",
+    why: "Instructions in the system prompt carry the most weight; user text mixed in there can override your rules (prompt injection).",
+    fix: "Keep the system prompt fixed and pass user text in a user message, clearly delimited."
+  },
+  "risky-agent-tool": {
+    title: "Agent tool that deletes, pays, sends or runs commands",
+    owasp: "ASI02",
+    severity: "review",
+    why: "An agent tricked by injected instructions can call a high-impact tool on its own.",
+    fix: "Ask a person to confirm before the tool acts (or limit what it can touch), and log every call."
+  },
+  "unpinned-mcp-server": {
+    title: "MCP server not pinned to a version",
+    owasp: "LLM03",
+    severity: "medium",
+    why: "npx/uvx fetch the newest release on every start, so a hijacked release runs on your machine with your credentials.",
+    fix: "Pin an exact version (package@1.2.3 or package==1.2.3) and update it on purpose."
+  }
+};
+var KEY_PATTERNS = [
+  { provider: "Anthropic", re: /\bsk-ant-(?:api|admin)\d{2}-[A-Za-z0-9_-]{60,}/g },
+  { provider: "OpenRouter", re: /\bsk-or-v1-[a-f0-9]{48,}/g },
+  { provider: "OpenAI", re: /\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{40,}/g },
+  { provider: "OpenAI", re: /\bsk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}\b/g },
+  { provider: "Google AI", re: /\bAIza[0-9A-Za-z_-]{35}\b/g },
+  { provider: "Groq", re: /\bgsk_[A-Za-z0-9]{48,}\b/g },
+  { provider: "xAI", re: /\bxai-[A-Za-z0-9]{70,}\b/g }
+];
+var PLACEHOLDER_RE = /x{6,}|0{8,}|\.\.\.|your|example|placeholder|dummy|fake|redacted|<|>/i;
+var PUBLIC_ENV_RE = /\b(?:NEXT_PUBLIC|VITE|REACT_APP|EXPO_PUBLIC|NUXT_PUBLIC|GATSBY|PUBLIC)_[A-Z0-9_]*(?:OPENAI|ANTHROPIC|CLAUDE|GEMINI|GOOGLE_AI|GENAI|GROQ|MISTRAL|OPENROUTER|XAI|DEEPSEEK|COHERE|PERPLEXITY)[A-Z0-9_]*(?:KEY|TOKEN|SECRET)\b/;
+var BROWSER_FLAG_RE = /\bdangerouslyAllowBrowser\s*:\s*true\b/;
+function isLocalEnvFile(file) {
+  return /^\.env(?:\.[\w-]+)?\.local$/.test(basename2(file).toLowerCase());
+}
+var isEnvFile = (file) => /^\.env(?:\.[\w-]+)*$/.test(basename2(file).toLowerCase());
+function looksReal(key) {
+  if (PLACEHOLDER_RE.test(key))
+    return false;
+  const body = key.replace(/^[a-z]+[-_](?:[a-z]+\d*-)?/i, "");
+  return new Set(body).size >= 12 && /\d/.test(body) && /[A-Za-z]/.test(body);
+}
+var mask = (key) => `${key.slice(0, 4)}\u2026`;
+var AI_OUTPUT_RE = /\bchoices\s*\[\s*\d+\s*\]\s*\.(?:message|text)\b|\boutput_text\b|\.content\s*\[\s*\d+\s*\]\s*\.text\b|\b(?:response|result|resp|res|completion|answer|output)\.text\b(?!\s*\()|\.response\.text\s*\(\s*\)/;
+var ASSIGN_RE = /^\s*(?:(?:const|let|var|final)\s+)?([A-Za-z_$][\w$]*)\s*(?::\s*[\w[\]|<> ]+)?\s*=(?!=)/;
+var SINKS = [
+  { name: "eval/exec", re: /(?<![\w.])(?:eval|exec)\s*\(|\bnew\s+Function\s*\(/ },
+  { name: "a shell", re: /\bos\.system\s*\(|\bsubprocess\.(?:run|call|Popen|check_output|check_call)\s*\(|\b(?:execSync|spawnSync|execFileSync)\s*\(/ },
+  { name: "SQL", re: /\b(?:cursor|conn|connection|db|session)\.(?:execute|executemany|exec_driver_sql)\s*\(|\.(?:\$queryRawUnsafe|\$executeRawUnsafe)\s*\(/ },
+  { name: "raw HTML", re: /\bdangerouslySetInnerHTML\b|\.(?:innerHTML|outerHTML)\s*=|\bdocument\.write\s*\(|\bv-html\b|\bmark_safe\s*\(|\bMarkup\s*\(/ }
+];
+var PARSED_RE = /\b(?:json\.loads|JSON\.parse|model_validate(?:_json)?|parse_obj|safeParse|\.parse)\s*\(/;
+function firstArgument(line, from) {
+  let depth = 0;
+  for (let i = from; i < line.length; i++) {
+    const c = line[i];
+    if ("([{".includes(c))
+      depth++;
+    else if (")]}".includes(c)) {
+      if (depth === 0)
+        return line.slice(from, i);
+      depth--;
+    } else if (c === "," && depth === 0)
+      return line.slice(from, i);
+  }
+  return line.slice(from);
+}
+var usesVar = (line, name) => new RegExp(`(?<![\\w.$])${name.replace(/\$/g, "\\$")}(?![\\w$])`).test(line);
+var USER_INPUT_NAME_RE = /^(?:user|input|query|question|message|msg|request|req|body|params|comment|feedback|search|q|text)(?:[._[\]'"]|$)|user_?input|user_?message|user_?query|user_?question|req\.(?:body|query|params)/i;
+var TOOL_CONTEXT_RE = /\btools\s*[=:[]|function_declarations|functionDeclarations|input_schema|\bparameters\s*["']?\s*:|@(?:\w+\.)?tool\b|\btool\s*\(|\bFunctionTool\b|\bStructuredTool\b|@function_tool\b/;
+var CONFIRMATION_RE = /confirm|approv|human_in_the_loop|humanInTheLoop|\binterrupt|needsApproval|requires?_approval|ask_user|askUser/i;
+var TEST_FILE_RE = /(?:^|\/)(?:tests?|__tests__|spec|e2e|fixtures?)\/|\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|\/)test_[^/]*\.py$|_test\.(?:py|go)$/i;
+var RISKY_VERB_RE = /^(?:delete|remove|drop|destroy|purge|wipe|truncate|pay|charge|refund|transfer|withdraw|send|email|purchase|buy|cancel|run_shell|run_command|execute_command|exec|execute_sql|shell)(?:_|$)/;
+var TOOL_NAME_RES = [
+  /["']?name["']?\s*:\s*["']([A-Za-z][\w-]{2,60})["']/g,
+  /@(?:\w+\.)?(?:tool|function_tool)(?:\([^)]*\))?\s*\n\s*(?:async\s+)?def\s+([A-Za-z_]\w*)/g,
+  /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*tool\s*\(/g,
+  /^\s*([A-Za-z_$][\w$]*)\s*:\s*tool\s*\(/gm,
+  /\b(?:Tool|StructuredTool(?:\.from_function)?|FunctionTool(?:\.from_defaults)?)\s*\([^)]{0,400}?\bname\s*=\s*["']([A-Za-z][\w-]{2,60})["']/g
+];
+var snake = (name) => name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/-/g, "_").toLowerCase();
+var MCP_FILE_RE = /(?:^|\/)(?:\.?mcp|mcp_settings|claude_desktop_config|cline_mcp_settings)\.json$/i;
+var RUNNERS = /* @__PURE__ */ new Set(["npx", "bunx", "uvx", "pnpx"]);
+var FLAGS_WITH_VALUE = /* @__PURE__ */ new Set(["--python", "-p", "--with", "--package", "--index-url", "--registry", "--cache", "-c", "--call"]);
+function packageSpec(rawCommand, rawArgs) {
+  const [first = "", ...inline] = rawCommand.trim().split(/\s+/);
+  const command = basename2(first.replace(/\\/g, "/")).replace(/\.(?:cmd|exe|ps1)$/i, "").toLowerCase();
+  let rest = [...inline, ...rawArgs];
+  if (command === "pnpm" && rest[0] === "dlx")
+    rest = rest.slice(1);
+  else if (!RUNNERS.has(command))
+    return null;
+  let spec;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === "--from") {
+      spec = rest[i + 1];
+      break;
+    }
+    if (FLAGS_WITH_VALUE.has(a)) {
+      i++;
+      continue;
+    }
+    if (a.startsWith("-"))
+      continue;
+    spec = a;
+    break;
+  }
+  if (!spec)
+    return null;
+  const version = /^@?[^@\s]+@(.+)$/.exec(spec)?.[1] ?? /==([^,\s]+)$/.exec(spec)?.[1];
+  return { spec, pinned: Boolean(version && /^\d+\.\d+\.\d+[\w.+-]*$/.test(version)) };
+}
+function lineOf(lines, needle) {
+  const i = lines.findIndex((l) => l.includes(needle));
+  return i >= 0 ? i + 1 : 1;
+}
+function parseJsonc(text) {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      const end = /"(?:[^"\\]|\\.)*"/y;
+      end.lastIndex = i;
+      const m = end.exec(text);
+      if (!m)
+        return void 0;
+      out += m[0];
+      i += m[0].length - 1;
+    } else if (c === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n")
+        i++;
+      out += "\n";
+    } else if (c === "/" && text[i + 1] === "*") {
+      const close = text.indexOf("*/", i + 2);
+      if (close === -1)
+        return void 0;
+      i = close + 1;
+    } else
+      out += c;
+  }
+  try {
+    return JSON.parse(out.replace(/,(\s*[}\]])/g, "$1"));
+  } catch {
+    return void 0;
+  }
+}
+function mcpFindings(file, content, lines) {
+  const config = parseJsonc(content);
+  if (config === void 0)
+    return [];
+  const root = config ?? {};
+  const servers = root.mcpServers ?? root.servers ?? root.mcp?.servers;
+  if (!servers || typeof servers !== "object")
+    return [];
+  const out = [];
+  for (const [name, raw] of Object.entries(servers)) {
+    const s = raw;
+    if (typeof s?.command !== "string")
+      continue;
+    const args = Array.isArray(s.args) ? s.args.filter((a) => typeof a === "string") : [];
+    const parsed = packageSpec(basename2(s.command), args);
+    if (!parsed || parsed.pinned)
+      continue;
+    out.push({ file, line: lineOf(lines, parsed.spec), rule: "unpinned-mcp-server", detail: `${name}: ${parsed.spec}` });
+  }
+  return out;
+}
+var COMMENT_LINE_RE2 = /^\s*(?:#|\/\/|\/\*|\*|--)/;
+function findSecurityIssues(file, content, kind) {
+  const lines = content.split(/\r?\n/);
+  const out = [];
+  const add = (index, rule, detail) => out.push({ file, line: index + 1, rule, detail });
+  const localEnv = isLocalEnvFile(file);
+  lines.forEach((line, i) => {
+    if (!localEnv) {
+      for (const { provider, re } of KEY_PATTERNS) {
+        for (const m of line.matchAll(re)) {
+          if (!looksReal(m[0]))
+            continue;
+          add(i, "ai-key-exposed", isEnvFile(file) ? `${provider} key ${mask(m[0])} in ${basename2(file)}: exposed if this file is committed (keep it git-ignored)` : `${provider} key ${mask(m[0])} written in the file`);
+        }
+      }
+    }
+    const pub = PUBLIC_ENV_RE.exec(line);
+    if (pub)
+      add(i, "ai-key-exposed", `${pub[0]} is sent to the browser by the build`);
+    if (BROWSER_FLAG_RE.test(line))
+      add(i, "ai-key-exposed", "dangerouslyAllowBrowser: true puts the API key in the browser");
+  });
+  const vscodeSettings = /(?:^|\/)settings\.json$/i.test(file) && content.includes('"mcp"') && content.includes('"servers"');
+  if (kind === "config" && (MCP_FILE_RE.test(file) || content.includes('"mcpServers"') || vscodeSettings))
+    out.push(...mcpFindings(file, content, lines));
+  if (kind !== "code" || TEST_FILE_RE.test(file) || !isAiContent(content))
+    return out.sort((a, b) => a.line - b.line);
+  const fromModel = /* @__PURE__ */ new Set();
+  lines.forEach((line, i) => {
+    if (COMMENT_LINE_RE2.test(line))
+      return;
+    const assigned = ASSIGN_RE.exec(line)?.[1];
+    const direct = AI_OUTPUT_RE.test(line);
+    const rhs = line.slice(line.indexOf("=") + 1);
+    if (assigned && !PARSED_RE.test(rhs) && (direct || [...fromModel].some((v) => usesVar(rhs, v))))
+      fromModel.add(assigned);
+    for (const sink of SINKS) {
+      const hit = sink.re.exec(line);
+      if (!hit)
+        continue;
+      const scope = sink.name === "SQL" ? firstArgument(line, hit.index + hit[0].length) : line;
+      if (sink.name === "SQL" && !AI_OUTPUT_RE.test(scope) && ![...fromModel].some((v) => usesVar(scope, v)))
+        continue;
+      const via = AI_OUTPUT_RE.test(scope) ? null : [...fromModel].find((v) => usesVar(scope, v));
+      if (AI_OUTPUT_RE.test(scope) || via) {
+        add(i, "model-output-to-sink", `${via ? `\`${via}\` (from the model's answer)` : "the model's answer"} goes to ${sink.name}`);
+        break;
+      }
+    }
+  });
+  for (const p of findPromptsInText(file, content)) {
+    if (!p.templated)
+      continue;
+    const placeholders = [...p.text.matchAll(/\$\{([^}]+)\}|\{([A-Za-z_][\w.[\]'"]*)\}/g)].map((m) => (m[1] ?? m[2] ?? "").trim());
+    const user = placeholders.find((name) => USER_INPUT_NAME_RE.test(name));
+    if (user)
+      add(p.line - 1, "user-input-in-system-prompt", `{${user}} inside ${p.name}`);
+  }
+  if (TOOL_CONTEXT_RE.test(content)) {
+    const risky = /* @__PURE__ */ new Map();
+    for (const re of TOOL_NAME_RES) {
+      for (const m of content.matchAll(re)) {
+        const name = m[1];
+        if (risky.has(name) || !RISKY_VERB_RE.test(snake(name)))
+          continue;
+        risky.set(name, content.slice(0, m.index + m[0].indexOf(name)).split("\n").length - 1);
+      }
+    }
+    if (risky.size > 0) {
+      let code3 = content.replace(/(["'`])(?:\\.|(?!\1)[^\\\n])*\1/g, '""');
+      for (const name of risky.keys())
+        code3 = code3.split(name).join("");
+      if (!CONFIRMATION_RE.test(code3))
+        for (const [name, index] of risky)
+          add(index, "risky-agent-tool", `tool ${name}`);
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+// packages/scanner/dist/tokens.js
+var TOKEN_RULES = {
+  "no-output-limit": {
+    title: "No output limit on the AI call",
+    fix: "Set max_tokens / max_output_tokens to the longest answer you actually need.",
+    saving: "Caps runaway answers; output tokens usually cost several times more than input tokens."
+  },
+  "no-prompt-caching": {
+    title: "System prompt sent without prompt caching (Anthropic)",
+    fix: 'Add cache_control: {"type": "ephemeral"} to the fixed system prompt block.',
+    saving: "Cached input is billed at a fraction of the normal input price on repeat calls (check current Anthropic pricing)."
+  },
+  "cache-breaker": {
+    title: "Changing value inside the system prompt",
+    fix: "Move dates, times and IDs out of the system prompt and into the end of the user message.",
+    saving: "Keeps the prompt prefix identical so provider prompt caching can apply."
+  },
+  "loop-not-batched": {
+    title: "AI calls made one by one in a loop",
+    fix: "If results aren't needed instantly, send the loop through the provider's Batch API.",
+    saving: "Batch APIs are often around half price (confirm each provider's current discount)."
+  },
+  "json-without-structured-output": {
+    title: "JSON parsed from free-text AI output",
+    fix: "Ask for structured output (response_format / JSON schema / responseMimeType) instead of parsing text.",
+    saving: "Shorter answers and fewer retries when the JSON comes back broken."
+  }
+};
+var CALL_RE = /\b(?:chat\.completions\.create|responses\.create|messages\.(?:create|stream)|generate_?[cC]ontent|generateText|streamText)\s*\(/;
+var ANTHROPIC_CALL_RE = /\bmessages\.(?:create|stream)\s*\(/;
+var OUTPUT_LIMIT_RE = /\b(?:max_tokens|max_completion_tokens|max_output_tokens|maxTokens|maxOutputTokens|maxCompletionTokens)\b/;
+var SPREAD_RE = /\*\*\w|\.\.\.\w/;
+var SYSTEM_PARAM_RE = /\bsystem\s*[=:]/;
+var PROMPT_VAR_RE = /\b(?:system(?:_prompt|Prompt)?|instructions)\b\s*[=:]/;
+var CHANGING_VALUE_RE = /\b(?:datetime\.(?:now|utcnow)|date\.today|time\.time|Date\.now)\s*\(|\bnew Date\s*\(|\buuid\d?\s*\(/;
+var LOOP_RE = /^\s*(?:for\s|async for\s|while\s|for\s*\()|\.(?:map|forEach)\s*\(/;
+var FUNCTION_START_RE = /^\s*(?:def |async def |function |class |export )/;
+var JSON_PARSE_RE = /\b(?:json\.loads|JSON\.parse)\s*\(/;
+var AI_OUTPUT_RE2 = /\bchoices\s*\[|\boutput_text\b|\bmessage\.content\b|\.content\s*\[\s*\d+\s*\]\s*\.text\b|\bresponse\.text\b|\bcompletion\.text\b/;
+var EMPTY_ARGS_RE = /^\(\s*\)/;
+var TRIPLE_QUOTE_RE = /"""|'''/g;
+var STRUCTURED_RE = /\b(?:response_format|json_schema|responseMimeType|response_mime_type|responseSchema|response_schema|generateObject|zodResponseFormat|text_format|output_format|tool_choice)\b/;
+var COMMENT_LINE_RE3 = /^\s*(?:#|\/\/|\/\*|\*|--)/;
+function callBlock(lines, start, column) {
+  let depth = 0;
+  const parts = [];
+  for (let i = start; i < lines.length && i < start + 40; i++) {
+    const text = i === start ? (lines[i] ?? "").slice(column) : lines[i] ?? "";
+    parts.push(text);
+    for (const ch of text) {
+      if (ch === "(")
+        depth++;
+      else if (ch === ")") {
+        depth--;
+        if (depth === 0)
+          return parts.join("\n");
+      }
+    }
+  }
+  return parts.join("\n");
+}
+function indentOf(line) {
+  return line.length - line.trimStart().length;
+}
+function insideLoop(lines, index, column) {
+  const line = lines[index] ?? "";
+  if (LOOP_RE.test(line.slice(0, column)))
+    return true;
+  const indent = indentOf(line);
+  for (let j = index - 1; j >= 0 && j >= index - 8; j--) {
+    const prev = lines[j] ?? "";
+    if (prev.trim() === "")
+      continue;
+    if (indentOf(prev) >= indent)
+      continue;
+    if (LOOP_RE.test(prev))
+      return true;
+    if (FUNCTION_START_RE.test(prev))
+      return false;
+  }
+  return false;
+}
+function findTokenTips(file, content, kind) {
+  if (kind !== "code")
+    return [];
+  const lines = content.split(/\r?\n/);
+  const tips = [];
+  const usesBatch = /batch/i.test(content);
+  const usesCacheControl = /cache_control|cacheControl/.test(content);
+  const usesStructuredOutput = STRUCTURED_RE.test(content);
+  let cacheTipGiven = false;
+  let jsonTipGiven = false;
+  let inDocstring = false;
+  lines.forEach((line, index) => {
+    const quoteCount = (line.match(TRIPLE_QUOTE_RE) ?? []).length;
+    const wasInDocstring = inDocstring;
+    if (quoteCount % 2 === 1)
+      inDocstring = !inDocstring;
+    if (wasInDocstring || quoteCount > 0 || COMMENT_LINE_RE3.test(line))
+      return;
+    const tip = (rule) => tips.push({ file, line: index + 1, rule, snippet: line.trim().slice(0, 160) });
+    const call = CALL_RE.exec(line);
+    if (call && !EMPTY_ARGS_RE.test(line.slice(call.index + call[0].length - 1))) {
+      const column = call.index + call[0].length - 1;
+      const block = callBlock(lines, index, column);
+      if (!OUTPUT_LIMIT_RE.test(block) && !SPREAD_RE.test(block))
+        tip("no-output-limit");
+      if (!usesCacheControl && !cacheTipGiven && ANTHROPIC_CALL_RE.test(line) && SYSTEM_PARAM_RE.test(block)) {
+        tip("no-prompt-caching");
+        cacheTipGiven = true;
+      }
+      if (!usesBatch && insideLoop(lines, index, call.index))
+        tip("loop-not-batched");
+    }
+    if (PROMPT_VAR_RE.test(line) && CHANGING_VALUE_RE.test(line))
+      tip("cache-breaker");
+    if (!usesStructuredOutput && !jsonTipGiven && JSON_PARSE_RE.test(line) && AI_OUTPUT_RE2.test(line)) {
+      tip("json-without-structured-output");
+      jsonTipGiven = true;
+    }
+  });
+  return tips;
+}
+
 // packages/scanner/dist/scan.js
 var MAX_FILE_BYTES = 1e6;
 async function scanDirectory(root) {
@@ -1324,7 +1725,7 @@ async function scanDirectory(root) {
   if (!info?.isDirectory())
     throw new Error(`Not a folder: ${root}`);
   const rules = compileApiRules(apis);
-  const result = { root, filesScanned: 0, aiFiles: 0, callSites: 0, findings: [], tokenTips: [] };
+  const result = { root, filesScanned: 0, aiFiles: 0, callSites: 0, findings: [], tokenTips: [], security: [] };
   for await (const file of walk(root)) {
     const size = (await stat(file.path)).size;
     if (size > MAX_FILE_BYTES)
@@ -1340,11 +1741,13 @@ async function scanDirectory(root) {
     result.findings.push(...scanned.findings);
     if (scanned.isAiFile)
       result.tokenTips.push(...findTokenTips(file.rel, content, file.kind));
+    result.security.push(...findSecurityIssues(file.rel, content, file.kind));
   }
   return result;
 }
 
 // packages/scanner/dist/report.js
+var SEVERITY_ORDER = { high: 0, medium: 1, review: 2 };
 var STATUS_ORDER = {
   retired: 0,
   rerouted: 1,
@@ -1440,6 +1843,16 @@ function buildReport(result, target, today) {
     row.locations.push(`${tip.file}:${tip.line}`);
   }
   const tokenTips = [...tipRows.values()].sort((a, b) => b.locations.length - a.locations.length);
+  const securityRows = /* @__PURE__ */ new Map();
+  for (const f of result.security ?? []) {
+    let row = securityRows.get(f.rule);
+    if (!row) {
+      row = { rule: f.rule, ...SECURITY_RULES[f.rule], findings: [] };
+      securityRows.set(f.rule, row);
+    }
+    row.findings.push({ location: `${f.file}:${f.line}`, detail: f.detail });
+  }
+  const security = [...securityRows.values()].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || b.findings.length - a.findings.length);
   return {
     target,
     today,
@@ -1449,7 +1862,8 @@ function buildReport(result, target, today) {
     models: models2,
     dynamic,
     apis: apiRows,
-    tokenTips
+    tokenTips,
+    security
   };
 }
 
@@ -1476,14 +1890,19 @@ function buildCheck(report, changedFiles) {
   const deadApis = report.apis.filter((a) => a.daysLeft <= 0);
   const soonApis = report.apis.filter((a) => a.daysLeft > 0 && a.daysLeft <= SOON_DAYS);
   const introducedDead = dead.some((m) => inChangedFiles(m.locations, changed)) || deadApis.some((a) => inChangedFiles(a.locations, changed));
-  const conclusion = introducedDead ? "failure" : dead.length + deadApis.length + soon.length + soonApis.length > 0 ? "neutral" : "success";
+  const keyRow = report.security?.find((s) => s.rule === "ai-key-exposed");
+  const introducedKey = Boolean(keyRow && inChangedFiles(keyRow.findings.map((f) => f.location), changed));
+  const conclusion = introducedDead || introducedKey ? "failure" : dead.length + deadApis.length + soon.length + soonApis.length > 0 ? "neutral" : "success";
   const parts = [];
   if (dead.length + deadApis.length > 0)
     parts.push(`${dead.length + deadApis.length} retired`);
   if (soon.length + soonApis.length > 0)
     parts.push(`${soon.length + soonApis.length} changing within ${SOON_DAYS} days`);
-  const title = parts.length > 0 ? `AI models and APIs: ${parts.join(", ")}` : `${report.models.length} AI models found, none changing soon`;
+  const modelTitle = parts.length > 0 ? `AI models and APIs: ${parts.join(", ")}` : `${report.models.length} AI models found, none changing soon`;
+  const title = introducedKey ? `AI API key exposed in this pull request \xB7 ${modelTitle}` : modelTitle;
   const lines = [];
+  if (introducedKey)
+    lines.push("**This pull request adds or touches a file with an exposed AI API key. Revoke the key and move it to a server-side secret.**", "");
   if (introducedDead)
     lines.push("**This pull request touches code that uses a retired AI model or API.**", "");
   const rows = [...dead, ...soon];
@@ -1499,6 +1918,13 @@ function buildCheck(report, changedFiles) {
   }
   for (const a of [...deadApis, ...soonApis]) {
     lines.push(`- **${a.name}** ${a.daysLeft <= 0 ? "shut down" : "shuts down"} ${a.date}${a.replacement ? ` (replacement: ${a.replacement})` : ""}`);
+  }
+  if (report.security?.length) {
+    lines.push("", "**AI security check** (advisory):");
+    for (const s of report.security) {
+      const where = s.findings.slice(0, 3).map((f) => `\`${f.location}\``).join(", ") + (s.findings.length > 3 ? ` +${s.findings.length - 3} more` : "");
+      lines.push(`- ${s.severity === "high" ? "**High:** " : ""}${s.title} [${s.owasp}]: ${where}. ${s.fix}`);
+    }
   }
   if (report.tokenTips.length > 0) {
     lines.push("", "**Token Saver:** " + report.tokenTips.map((t) => `${t.title} (${t.locations.length})`).join(" \xB7 "));
