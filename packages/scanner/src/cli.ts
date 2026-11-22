@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -13,6 +13,7 @@ import {
   formatReplayMarkdown,
   formatReplayText,
   goldenLine,
+  importPrompts,
   loadGoldenSet,
   plannedCalls,
   plannedRepairCalls,
@@ -33,6 +34,7 @@ const USAGE = `Usage:
   ai-change-guard scan <folder | https://github.com/owner/repo> [options]
   ai-change-guard replay --set prompts.jsonl --old provider:model --new provider:model [options]
   ai-change-guard switch <folder> --from <model-id> --to <model-id> [--write]
+  ai-change-guard import <log-file> --out golden.jsonl [--model <model-id>] [--limit N]
 
 Scan options:
   --json                      Print the report as JSON
@@ -48,6 +50,12 @@ Replay options:
   --repair                    When an answer format breaks, try fixes on the new model and report the one that works
   --repaired-set FILE         With --repair, write a new golden set with the working fixes applied
                               (prompts only: comments and extra fields are not copied)
+
+Import options (turns logged AI calls into a golden set; JSON or JSONL from Langfuse,
+Helicone, OpenTelemetry, or raw OpenAI / Anthropic / Gemini request logs):
+  --out FILE                  Golden set to write (a new file)
+  --model ID                  Keep only calls to this model
+  --limit N                   Keep at most N prompts, spread over the log (default 50)
 
 Switch options:
   --write                     Change the files (without it, only shows what would change)
@@ -187,6 +195,48 @@ async function switchCommand(args: string[]): Promise<number> {
   return 0;
 }
 
+async function importCommand(args: string[]): Promise<number> {
+  let file: string | undefined;
+  let out: string | undefined;
+  let model: string | undefined;
+  let limit = 50;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--out") out = args[++i];
+    else if (arg === "--model") {
+      model = args[++i];
+      if (!model || model.startsWith("-")) throw new UsageError("--model needs a model ID.");
+    } else if (arg === "--limit") limit = positiveInt(args[++i], "--limit");
+    else if (arg.startsWith("-")) throw new UsageError(`Unknown option: ${arg}`);
+    else if (!file) file = arg;
+    else throw new UsageError(`Unexpected argument: ${arg}`);
+  }
+  if (!file || !out || out.startsWith("-")) throw new UsageError("import needs a log file and --out.");
+  if (await stat(resolve(out)).catch(() => null)) throw new UsageError(`${out} already exists; choose a new file name.`);
+
+  const result = importPrompts(await readFile(resolve(file), "utf8"), { limit, ...(model ? { model } : {}) });
+  console.log(`Read ${result.records} records from ${file}; found ${result.found} distinct prompts.`);
+  const models = Object.entries(result.models).sort((a, b) => b[1] - a[1]);
+  if (models.length) console.log(`Models: ${models.map(([m, n]) => `${m} (${n})`).join(", ")}`);
+  for (const [reason, n] of Object.entries(result.skipped).sort((a, b) => b[1] - a[1])) console.log(`  skipped ${n}: ${reason}`);
+  if (result.unknownModel > 0) console.log(`  kept ${result.unknownModel} whose log names no model (raw Gemini requests carry it in the URL); check they belong to ${model}.`);
+  if (result.items.length === 0) {
+    console.log("No prompts to write. The importer reads OpenAI, Anthropic and Gemini request bodies and OpenTelemetry GenAI spans.");
+    return 1;
+  }
+  try {
+    // wx: fail instead of overwriting a file that appeared since the check above.
+    await writeFile(resolve(out), result.items.map(goldenLine).join("\n") + "\n", { flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new UsageError(`${out} already exists; choose a new file name.`);
+    throw error;
+  }
+  const checks = result.items.filter((i) => i.expect).length;
+  console.log(`Wrote ${result.items.length} prompts to ${out} (${checks} with checks taken from the logged answers).`);
+  console.log("These are real messages from your logs: read the file and remove anything private before you commit it.");
+  return 0;
+}
+
 class UsageError extends Error {}
 
 interface Options {
@@ -230,6 +280,7 @@ async function main(argv: string[]): Promise<number> {
   }
   if (command === "replay") return replayCommand(rest);
   if (command === "switch") return switchCommand(rest);
+  if (command === "import") return importCommand(rest);
   if (command !== "scan") throw new UsageError(command ? `Unknown command: ${command}` : "Missing command.");
 
   const options = parseArgs(rest);

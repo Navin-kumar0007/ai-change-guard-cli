@@ -11,3 +11,5 @@ export { buildReplayReport, formatReplayMarkdown, formatReplayText, isReroute } 
 export type { ReplayReport, Reroute } from "./report.js";
 export { applyRepair, formatInstruction, formatRepairMarkdown, formatRepairText, goldenLine, plannedRepairCalls, repairable, runRepair } from "./repair.js";
 export type { RepairAttempt, RepairKind, RepairPatch, RepairReport, RepairResult } from "./repair.js";
+export { importPrompts, sameModel } from "./importer.js";
+export type { ImportOptions, ImportResult } from "./importer.js";
