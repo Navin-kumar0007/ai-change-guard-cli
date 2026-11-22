@@ -127,7 +127,7 @@ const PERMISSION_HELP =
   '"Allow GitHub Actions to create and approve pull requests".';
 
 function permissionHint(error: unknown): unknown {
-  if (error instanceof GitHubError && (error.status === 403 || error.status === 404)) return new Error(`${error.message}. ${PERMISSION_HELP}`);
+  if (error instanceof GitHubError && (error.status === 403 || error.status === 404)) return new Error(`${error.message.replace(/\.+$/, "")}. ${PERMISSION_HELP}`);
   return error;
 }
 
