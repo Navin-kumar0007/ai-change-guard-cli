@@ -1,8 +1,9 @@
 import { appendFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { createClient, withRetry, type LlmClient } from "@ai-change-guard/llm";
+import { relative, resolve, sep } from "node:path";
+import { createClient, parseModelRef, withRetry, type LlmClient } from "@ai-change-guard/llm";
 import { buildReplayReport, formatReplayMarkdown, loadGoldenSet, runReplay } from "@ai-change-guard/replay";
-import { buildCheck, buildReport, scanDirectory, type Report } from "@ai-change-guard/scanner";
+import { buildCheck, buildReport, checkSwitchIds, planSwitch, scanDirectory, type Report } from "@ai-change-guard/scanner";
+import { githubApi, openEvidencePr, type GitHubApi } from "./pr.js";
 
 const SOON_DAYS = 90;
 
@@ -38,10 +39,29 @@ export interface RunDeps {
   today: string;
   log: (line: string) => void;
   client?: LlmClient;
+  github?: GitHubApi;
+}
+
+/**
+ * The plain model IDs an evidence PR swaps. Only a switch within one provider (and one gateway
+ * prefix) is a pure ID change; anything else needs different SDK code, which we never write.
+ */
+export function switchIds(oldModel: string, newModel: string): { from: string; to: string; prefix?: string } {
+  const a = parseModelRef(oldModel);
+  const b = parseModelRef(newModel);
+  // Gemini accepts "models/<id>" and "<id>" alike, so that prefix is not a different route.
+  const bare = (m: string) => m.replace(/^models\//, "");
+  const prefix = (m: string) => (bare(m).includes("/") ? bare(m).slice(0, bare(m).lastIndexOf("/")) : "");
+  if (a.provider !== b.provider || prefix(a.model) !== prefix(b.model)) {
+    throw new Error(`open-pr only switches models within one provider: ${oldModel} to ${newModel} needs different SDK code, so change it by hand.`);
+  }
+  const last = (m: string) => m.slice(m.lastIndexOf("/") + 1);
+  const ids = checkSwitchIds(last(a.model), last(b.model));
+  return prefix(a.model) ? { ...ids, prefix: prefix(a.model) } : ids;
 }
 
 /** Runs the Action and returns the process exit code. */
-export async function run({ env, today, log, client }: RunDeps): Promise<number> {
+export async function run({ env, today, log, client, github }: RunDeps): Promise<number> {
   const workspace = env.GITHUB_WORKSPACE ?? process.cwd();
   const summary = async (markdown: string) => {
     if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `${markdown}\n\n`);
@@ -49,7 +69,10 @@ export async function run({ env, today, log, client }: RunDeps): Promise<number>
   };
 
   const failOn = oneOf(input("fail-on", env) || "retired", "fail-on", ["retired", "retiring", "none"]);
-  const report = buildReport(await scanDirectory(resolve(workspace, input("path", env) || ".")), env.GITHUB_REPOSITORY ?? workspace, today);
+  const openPr = oneOf(input("open-pr", env) || "false", "open-pr", ["true", "false"]) === "true";
+  const scanRoot = resolve(workspace, input("path", env) || ".");
+  const scan = await scanDirectory(scanRoot);
+  const report = buildReport(scan, env.GITHUB_REPOSITORY ?? workspace, today);
   const check = buildCheck(report, null);
   await summary(`## AI Change Guard: ${check.title}\n\n${check.summary}`);
   let failed = scanFails(report, failOn);
@@ -58,8 +81,14 @@ export async function run({ env, today, log, client }: RunDeps): Promise<number>
   const prompts = input("prompts", env);
   const oldModel = input("old-model", env);
   const newModel = input("new-model", env);
+  if (openPr && !(prompts && oldModel && newModel)) {
+    throw new Error('open-pr needs a replay as proof: set "prompts", "old-model" and "new-model".');
+  }
   if (prompts || oldModel || newModel) {
     if (!prompts || !oldModel || !newModel) throw new Error('A replay needs all three inputs: "prompts", "old-model" and "new-model".');
+    // Plan the code change before the replay: bad IDs fail here, before any paid call.
+    const ids = openPr ? switchIds(oldModel, newModel) : undefined;
+    const plan = ids ? await planSwitch(scanRoot, scan.findings, ids.from, ids.to, ids.prefix ? { prefix: ids.prefix } : {}) : undefined;
     const replayFailOn = oneOf(input("replay-fail-on", env) || "broken", "replay-fail-on", ["broken", "changed", "none"]);
     const runs = positive(input("runs", env) || "3", "runs");
     const items = await loadGoldenSet(resolve(workspace, prompts));
@@ -78,6 +107,34 @@ export async function run({ env, today, log, client }: RunDeps): Promise<number>
     const replayFailed = (replayFailOn === "broken" && broken > 0) || (replayFailOn === "changed" && broken + changed > 0);
     log(`${replayFailed ? "::error::" : ""}AI Change Guard replay: ${replay.totals.same} same, ${changed} changed, ${broken} broken`);
     failed = failed || replayFailed;
+
+    if (ids && plan) {
+      const notice = (text: string) => log(`::notice::AI Change Guard: ${text}`);
+      if (replayFailed || broken > 0 || replay.totals.error > 0) {
+        notice("no pull request, because the replay did not pass (see the Summary).");
+      } else if (plan.edits.length === 0) {
+        notice(`no pull request, because no code uses ${ids.from} as a plain model ID${plan.skipped.length ? ` (${plan.skipped.length} use(s) need a manual change)` : ""}.`);
+      } else {
+        const token = input("github-token", env) || env.GITHUB_TOKEN || "";
+        if (!github && !token) throw new Error('open-pr needs a token: keep the default "github-token" input or pass one.');
+        const repo = env.GITHUB_REPOSITORY ?? "";
+        const result = await openEvidencePr({
+          api: github ?? githubApi(token, env.GITHUB_API_URL),
+          repo,
+          ref: env.GITHUB_REF ?? "",
+          sha: env.GITHUB_SHA ?? "",
+          workspace,
+          scanPath: relative(workspace, scanRoot).split(sep).join("/"),
+          plan,
+          replay,
+        });
+        if (result.action === "skipped") notice(`no pull request. ${result.reason}`);
+        else {
+          log(`AI Change Guard ${result.action} pull request #${result.number}: ${result.url}`);
+          await summary(`**Evidence pull request ${result.action}:** [#${result.number}](${result.url})`);
+        }
+      }
+    }
   }
   return failed ? 1 : 0;
 }

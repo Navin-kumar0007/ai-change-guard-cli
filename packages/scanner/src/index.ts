@@ -8,3 +8,5 @@ export { findTokenTips, TOKEN_RULES } from "./tokens.js";
 export type { TokenRule, TokenTip } from "./tokens.js";
 export { buildCheck } from "./check.js";
 export type { CheckOutput, Conclusion } from "./check.js";
+export { applySwitch, checkSwitchIds, planSwitch } from "./switch.js";
+export type { SwitchEdit, SwitchOptions, SwitchPlan, SwitchSkip } from "./switch.js";

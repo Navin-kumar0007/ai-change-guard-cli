@@ -32,6 +32,12 @@ inputs:
   replay-fail-on:
     description: "Fail the step when a replayed prompt is: broken, changed, or none."
     default: broken
+  open-pr:
+    description: "After a replay that passes, open a pull request that switches old-model to new-model, with the replay report as proof (true or false). Runs on the default branch only; needs contents: write and pull-requests: write."
+    default: "false"
+  github-token:
+    description: Token used to open the pull request. A GitHub App or personal token also starts your CI on it.
+    default: ${{ github.token }}
 runs:
   using: node24
   main: action/bundle/index.js

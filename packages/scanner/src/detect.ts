@@ -103,6 +103,20 @@ const STRING_RE = /(["'`])((?:\\.|(?!\1)[^\\\n])*)\1/g;
 const CONFIG_VALUE_RE = /^\s*(?:export\s+)?[\w.\-]+\s*[=:]\s*["']?([^"'#\s,]+)/;
 const YAML_ITEM_RE = /^\s*-\s+["']?([^"'#\s,]+)/;
 
+/** Where the values that `candidates` reads sit on the line: string literals, and a config value. */
+export function valueSpans(line: string, kind: FileKind): { start: number; end: number }[] {
+  const spans: { start: number; end: number }[] = [];
+  for (const m of line.matchAll(STRING_RE)) {
+    if (m[2]) spans.push({ start: m.index + 1, end: m.index + 1 + m[2].length });
+  }
+  if (kind === "config") {
+    const m = new RegExp(CONFIG_VALUE_RE.source, "d").exec(line) ?? new RegExp(YAML_ITEM_RE.source, "d").exec(line);
+    const at = m?.indices?.[1];
+    if (at) spans.push({ start: at[0], end: at[1] });
+  }
+  return spans;
+}
+
 export function candidates(line: string, kind: FileKind): string[] {
   const out: string[] = [];
   for (const m of line.matchAll(STRING_RE)) {

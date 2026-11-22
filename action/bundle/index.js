@@ -1,6 +1,6 @@
 // action/src/main.ts
 import { appendFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { relative as relative2, resolve, sep as sep2 } from "node:path";
 
 // packages/llm/dist/index.js
 var LlmError = class extends Error {
@@ -555,7 +555,7 @@ function judgeItem(item, records) {
     result.sampleOld = oldOk[0].text;
   if (newOk[0])
     result.sampleNew = newOk[0].text;
-  const add = (code, severity, detail) => result.reasons.push({ code, severity, detail });
+  const add = (code2, severity, detail) => result.reasons.push({ code: code2, severity, detail });
   if (oldOk.length === 0) {
     result.verdict = "error";
     const oldError = firstError(oldRecords);
@@ -805,6 +805,20 @@ function classifyModelId(literal) {
 var STRING_RE = /(["'`])((?:\\.|(?!\1)[^\\\n])*)\1/g;
 var CONFIG_VALUE_RE = /^\s*(?:export\s+)?[\w.\-]+\s*[=:]\s*["']?([^"'#\s,]+)/;
 var YAML_ITEM_RE = /^\s*-\s+["']?([^"'#\s,]+)/;
+function valueSpans(line, kind) {
+  const spans = [];
+  for (const m of line.matchAll(STRING_RE)) {
+    if (m[2])
+      spans.push({ start: m.index + 1, end: m.index + 1 + m[2].length });
+  }
+  if (kind === "config") {
+    const m = new RegExp(CONFIG_VALUE_RE.source, "d").exec(line) ?? new RegExp(YAML_ITEM_RE.source, "d").exec(line);
+    const at = m?.indices?.[1];
+    if (at)
+      spans.push({ start: at[0], end: at[1] });
+  }
+  return spans;
+}
 function candidates(line, kind) {
   const out = [];
   for (const m of line.matchAll(STRING_RE)) {
@@ -1339,6 +1353,321 @@ function buildCheck(report, changedFiles) {
   return { conclusion, title, summary: lines.join("\n") };
 }
 
+// packages/scanner/dist/switch.js
+import { readFile as readFile3, writeFile } from "node:fs/promises";
+import { join as join2 } from "node:path";
+var MODEL_ID_RE = /^[A-Za-z0-9][\w.\-:@]{0,119}$/;
+var ID_CHAR_BEFORE = /[\w.\-@]/;
+var ID_CHAR_AFTER = /[\w.\-/:@]/;
+var TOKEN_CHAR = /[\w.\-/:@]/;
+var REASONS = {
+  fineTuned: "Fine-tuned model: train a new fine-tune on the new model first.",
+  bedrock: "Bedrock model IDs have their own format; change this one by hand.",
+  azure: "Azure calls a deployment name; deploy the new model on Azure, then change this by hand.",
+  other: "Written in a form AI Change Guard does not rewrite automatically."
+};
+function checkSwitchIds(from, to) {
+  const fromId = from.trim().toLowerCase();
+  const toId = to.trim();
+  if (!MODEL_ID_RE.test(fromId) || !MODEL_ID_RE.test(toId))
+    throw new Error("Model IDs may only contain letters, digits and . - _ : @");
+  if (fromId === toId.toLowerCase())
+    throw new Error("The old and new model are the same.");
+  return { from: fromId, to: toId };
+}
+function findingReason(finding, from) {
+  const hit = finding.model;
+  if (hit.fineTuned)
+    return REASONS.fineTuned;
+  if (hit.platformHint === "aws-bedrock")
+    return REASONS.bedrock;
+  if (hit.platformHint === "azure-openai")
+    return REASONS.azure;
+  const raw = hit.raw.trim().toLowerCase();
+  return raw === from || raw.endsWith(`/${from}`) ? null : REASONS.other;
+}
+function rewriteLine(line, kind, from, to, opts) {
+  const spans = valueSpans(line, kind);
+  const lower = line.toLowerCase();
+  const reasons = [];
+  let out = "";
+  let last = 0;
+  for (let i = lower.indexOf(from); i !== -1; i = lower.indexOf(from, i + 1)) {
+    const end = i + from.length;
+    if (end > line.length || i > 0 && ID_CHAR_BEFORE.test(line[i - 1]) || end < line.length && ID_CHAR_AFTER.test(line[end]))
+      continue;
+    if (!spans.some((s) => i >= s.start && end <= s.end))
+      continue;
+    let start = i;
+    while (start > 0 && TOKEN_CHAR.test(line[start - 1]))
+      start--;
+    const prefix = lower.slice(start, i);
+    if (prefix.startsWith("ft:") || prefix.endsWith("ft:"))
+      reasons.push(REASONS.fineTuned);
+    else if (/(^|\/)azure\/$/.test(prefix))
+      reasons.push(REASONS.azure);
+    else if (/(^|\/)bedrock\/$/.test(prefix))
+      reasons.push(REASONS.bedrock);
+    else if (opts.prefix && !prefix.endsWith(`${opts.prefix.toLowerCase()}/`)) {
+      reasons.push(`Not called through ${opts.prefix}/, the route the replay tested.`);
+    } else {
+      out += line.slice(last, i) + to;
+      last = end;
+    }
+  }
+  return { line: out + line.slice(last), reasons };
+}
+async function planSwitch(root, findings, from, to, opts = {}) {
+  const ids = checkSwitchIds(from, to);
+  const plan = { ...ids, edits: [], skipped: [], files: /* @__PURE__ */ new Map() };
+  const byFile = /* @__PURE__ */ new Map();
+  for (const f of findings) {
+    if (f.kind !== "model" || f.model?.id !== ids.from)
+      continue;
+    const lines = byFile.get(f.file) ?? /* @__PURE__ */ new Map();
+    lines.set(f.line, [...lines.get(f.line) ?? [], f]);
+    byFile.set(f.file, lines);
+  }
+  for (const [file, uses] of byFile) {
+    const kind = fileKind(file);
+    if (!kind)
+      continue;
+    const lines = (await readFile3(join2(root, file), "utf8")).split("\n");
+    let changed = false;
+    for (const [lineNo, lineFindings] of uses) {
+      const original = lines[lineNo - 1];
+      if (original === void 0)
+        continue;
+      const result = rewriteLine(original, kind, ids.from, ids.to, opts);
+      const reasons = new Set(result.reasons);
+      for (const f of lineFindings) {
+        const reason = findingReason(f, ids.from);
+        if (reason && reason !== REASONS.other)
+          reasons.add(reason);
+      }
+      if (result.line !== original) {
+        lines[lineNo - 1] = result.line;
+        changed = true;
+        plan.edits.push({ file, line: lineNo, before: original.trim(), after: result.line.trim() });
+      } else if (reasons.size === 0) {
+        reasons.add(lineFindings.some((f) => findingReason(f, ids.from)) ? REASONS.other : "Could not place the change on this line.");
+      }
+      const raw = lineFindings[0].model.raw;
+      for (const reason of reasons)
+        plan.skipped.push({ file, line: lineNo, raw, reason });
+    }
+    if (changed)
+      plan.files.set(file, lines.join("\n"));
+  }
+  plan.edits.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
+  plan.skipped.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
+  return plan;
+}
+
+// action/src/pr.ts
+import { createHash } from "node:crypto";
+import { readFile as readFile4 } from "node:fs/promises";
+import { join as join3, posix } from "node:path";
+var GitHubError = class extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+  status;
+};
+function githubApi(token, baseUrl = "https://api.github.com", fetchImpl = fetch) {
+  return async (method, path, body) => {
+    const res = await fetchImpl(`${baseUrl.replace(/\/$/, "")}${path}`, {
+      method,
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "ai-change-guard-action",
+        ...body === void 0 ? {} : { "Content-Type": "application/json" }
+      },
+      body: body === void 0 ? void 0 : JSON.stringify(body)
+    });
+    if (!res.ok) {
+      const detail = (await res.json().catch(() => ({}))).message ?? "";
+      throw new GitHubError(res.status, `GitHub ${res.status} on ${method} ${path.split("?")[0]}${detail ? `: ${detail}` : ""}`);
+    }
+    return res.status === 204 ? void 0 : await res.json();
+  };
+}
+var MAX_BODY = 6e4;
+var MAX_LISTED = 50;
+function branchName(from, to) {
+  const slug = (s) => s.toLowerCase().replace(/[^a-z0-9.\-]+/g, "-").replace(/^-+|-+$/g, "");
+  return `ai-change-guard/${slug(from)}-to-${slug(to)}`;
+}
+function code(text) {
+  return "`" + text.replace(/\s+/g, " ").slice(0, 200).replace(/`/g, "'") + "`";
+}
+function listed(items, render, more) {
+  return [...items.slice(0, MAX_LISTED).map(render), ...items.length > MAX_LISTED ? [`- \u2026and ${items.length - MAX_LISTED} more ${more}`] : []];
+}
+function evidenceBody(plan, replay, scanPath, note) {
+  const where = (file, line) => `\`${posix.join(scanPath || ".", file)}:${line}\``;
+  const t = replay.totals;
+  const prompts = replay.items.length;
+  const lines = [
+    ...note ? [`> ${note}`, ""] : [],
+    `## Switch \`${plan.from}\` to \`${plan.to}\``,
+    "",
+    `Before opening this pull request, AI Change Guard replayed **${prompts} of your real prompt${prompts === 1 ? "" : "s"}** ${replay.runs} time${replay.runs === 1 ? "" : "s"} each on \`${replay.oldModel}\` and \`${replay.newModel}\`.`,
+    "",
+    "| Same | Changed | Broken | Errors |",
+    "| ---: | ---: | ---: | ---: |",
+    `| ${t.same} | ${t.changed} | ${t.broken} | ${t.error} |`,
+    "",
+    t.changed > 0 ? `**${t.changed} prompt${t.changed === 1 ? "" : "s"} answered differently but passed your checks.** Read them in the full report below before merging.` : "Every prompt passed your checks with the same kind of answer on both models.",
+    "",
+    `### Code changes (${plan.edits.length})`,
+    "",
+    ...listed(plan.edits, (e) => `- ${where(e.file, e.line)}: ${code(e.before)} \u2192 ${code(e.after)}`, "(see the Files tab)")
+  ];
+  if (plan.skipped.length > 0) {
+    lines.push("", `### Not changed automatically (${plan.skipped.length})`, "");
+    lines.push(...listed(plan.skipped, (s) => `- ${where(s.file, s.line)}: ${code(s.raw)}. ${s.reason}`, "(run `ai-change-guard switch` locally to see all)"));
+  }
+  lines.push(
+    "",
+    "### Before you merge",
+    "",
+    `- Settings are not checked yet: make sure every option you pass (temperature, max_tokens, tools, \u2026) is supported by \`${plan.to}\`.`,
+    "- Model IDs built at runtime (from variables or environment) are not changed; search for them by hand.",
+    "- A pull request opened with the default workflow token does not start other workflows. Close and reopen it, or give the Action a `github-token` from a GitHub App or a personal token, to run your CI on it.",
+    ""
+  );
+  const top = lines.join("\n");
+  const open = "<details><summary>Full replay report</summary>\n\n";
+  const close = "\n\n</details>";
+  const cut = "\n\n\u2026cut to fit GitHub's limit; the full report is in the workflow run's Summary.";
+  let report = formatReplayMarkdown(replay);
+  const room = MAX_BODY - top.length - open.length - close.length;
+  if (report.length > room) report = report.slice(0, Math.max(0, room - cut.length)) + cut;
+  return top + open + report + close;
+}
+var PERMISSION_HELP = 'Give the job `permissions: { contents: write, pull-requests: write }`, and in Settings \u2192 Actions \u2192 General turn on "Allow GitHub Actions to create and approve pull requests".';
+function permissionHint(error) {
+  if (error instanceof GitHubError && (error.status === 403 || error.status === 404)) return new Error(`${error.message}. ${PERMISSION_HELP}`);
+  return error;
+}
+function gitBlobSha(content) {
+  return createHash("sha1").update(`blob ${content.length}\0`).update(content).digest("hex");
+}
+async function trackedOnly(input2) {
+  const { api, repo, plan } = input2;
+  const tree = await api(
+    "GET",
+    `/repos/${repo}/git/trees/${input2.sha}?recursive=1`
+  );
+  if (tree.truncated) throw new Error("The repository has too many files for GitHub to list in one tree, so AI Change Guard cannot check which files it may commit.");
+  const tracked = new Map(tree.tree.filter((e) => e.type === "blob").map((e) => [e.path, e]));
+  const keep = { ...plan, edits: [], skipped: [...plan.skipped], files: /* @__PURE__ */ new Map() };
+  const modes = /* @__PURE__ */ new Map();
+  for (const [file, content] of plan.files) {
+    const path = posix.join(input2.scanPath || ".", file);
+    const entry = tracked.get(path);
+    const reason = !entry ? "Not committed in the repository (untracked or gitignored), so it is left out of the PR." : gitBlobSha(await readFile4(join3(input2.workspace, path))) !== entry.sha ? "Changed by an earlier step of this job, so it is left out of the PR." : null;
+    const edits = plan.edits.filter((e) => e.file === file);
+    if (reason) {
+      keep.skipped.push(...edits.map((e) => ({ file, line: e.line, raw: plan.from, reason })));
+      continue;
+    }
+    keep.edits.push(...edits);
+    keep.files.set(file, content);
+    modes.set(path, entry.mode);
+  }
+  keep.skipped.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
+  return { plan: keep, modes };
+}
+async function openEvidencePr(input2) {
+  const { api, repo, replay } = input2;
+  const { default_branch: base } = await api("GET", `/repos/${repo}`);
+  if (input2.ref !== `refs/heads/${base}`) {
+    return { action: "skipped", reason: `Evidence PRs are opened from runs on ${base} (push, schedule or workflow_dispatch), not from ${input2.ref}.` };
+  }
+  const head = await api("GET", `/repos/${repo}/git/ref/heads/${encodeURIComponent(base)}`);
+  if (head.object.sha !== input2.sha) {
+    return { action: "skipped", reason: `${base} moved on while this run was going; the next run opens the PR.` };
+  }
+  const { plan, modes } = await trackedOnly(input2);
+  if (plan.files.size === 0) return { action: "skipped", reason: "None of the files to change are committed and unchanged in the repository." };
+  const branch = branchName(plan.from, plan.to);
+  const owner = repo.split("/")[0];
+  const t = replay.totals;
+  const subject = `Switch ${plan.from} to ${plan.to}`;
+  const message = `${subject}
+
+Replayed ${replay.items.length} prompts x ${replay.runs} runs with AI Change Guard: ${t.same} same, ${t.changed} changed, ${t.broken} broken.`;
+  const body = evidenceBody(plan, replay, input2.scanPath);
+  const listPulls = () => api("GET", `/repos/${repo}/pulls?state=all&per_page=20&head=${encodeURIComponent(`${owner}:${branch}`)}`);
+  const ownsBranch = async () => {
+    const cmp = await api(
+      "GET",
+      `/repos/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(branch)}`
+    );
+    const ours = cmp.ahead_by === 0 || cmp.ahead_by === 1 && cmp.commits[0]?.commit.message.startsWith(`${subject}
+`) === true;
+    return { owned: ours, behind: cmp.behind_by };
+  };
+  const commit = async () => {
+    const tree = [...plan.files].map(([file, content]) => {
+      const path = posix.join(input2.scanPath || ".", file);
+      return { path, mode: modes.get(path), type: "blob", content };
+    });
+    const parent = await api("GET", `/repos/${repo}/git/commits/${input2.sha}`);
+    const newTree = await api("POST", `/repos/${repo}/git/trees`, { base_tree: parent.tree.sha, tree });
+    return (await api("POST", `/repos/${repo}/git/commits`, { message, tree: newTree.sha, parents: [input2.sha] })).sha;
+  };
+  const refresh = async (pr) => {
+    const { owned, behind } = await ownsBranch();
+    if (owned && behind > 0) {
+      await api("PATCH", `/repos/${repo}/git/refs/heads/${branch}`, { sha: await commit(), force: true });
+    }
+    const note = owned ? void 0 : `People have added commits to this branch, so AI Change Guard no longer changes its code. The lists below describe ${base} today.`;
+    await api("PATCH", `/repos/${repo}/pulls/${pr.number}`, { body: owned ? body : evidenceBody(plan, replay, input2.scanPath, note) });
+    return { action: "updated", number: pr.number, url: pr.html_url };
+  };
+  try {
+    const existing = await listPulls();
+    const open = existing.find((p) => p.state === "open");
+    if (open) return await refresh(open);
+    const closed = existing.find((p) => p.state === "closed" && !p.merged_at);
+    if (closed) {
+      return { action: "skipped", reason: `Pull request #${closed.number} for this switch was closed without merging, so no new one is opened. Reopen it to continue.` };
+    }
+    const sha = await commit();
+    try {
+      await api("POST", `/repos/${repo}/git/refs`, { ref: `refs/heads/${branch}`, sha });
+    } catch (error) {
+      if (!(error instanceof GitHubError) || error.status !== 422) throw error;
+      if (!(await ownsBranch()).owned) {
+        return { action: "skipped", reason: `Branch ${branch} already exists with other commits; delete it to get a new pull request.` };
+      }
+      await api("PATCH", `/repos/${repo}/git/refs/heads/${branch}`, { sha, force: true });
+    }
+    try {
+      const pr = await api("POST", `/repos/${repo}/pulls`, {
+        title: `${subject} (tested on ${replay.items.length} real prompts)`,
+        head: branch,
+        base,
+        body
+      });
+      return { action: "created", number: pr.number, url: pr.html_url };
+    } catch (error) {
+      const raced = error instanceof GitHubError && error.status === 422 ? (await listPulls()).find((p) => p.state === "open") : void 0;
+      if (!raced) throw error;
+      await api("PATCH", `/repos/${repo}/pulls/${raced.number}`, { body });
+      return { action: "updated", number: raced.number, url: raced.html_url };
+    }
+  } catch (error) {
+    throw permissionHint(error);
+  }
+}
+
 // action/src/main.ts
 var SOON_DAYS2 = 90;
 function input(name, env) {
@@ -1360,7 +1689,19 @@ function scanFails(report, failOn) {
   const soon = report.models.some((m) => (m.status === "retiring" || m.status === "rerouting") && (m.daysLeft ?? Infinity) <= SOON_DAYS2) || report.apis.some((a) => a.daysLeft > 0 && a.daysLeft <= SOON_DAYS2);
   return retired || soon;
 }
-async function run({ env, today, log, client }) {
+function switchIds(oldModel, newModel) {
+  const a = parseModelRef(oldModel);
+  const b = parseModelRef(newModel);
+  const bare = (m) => m.replace(/^models\//, "");
+  const prefix = (m) => bare(m).includes("/") ? bare(m).slice(0, bare(m).lastIndexOf("/")) : "";
+  if (a.provider !== b.provider || prefix(a.model) !== prefix(b.model)) {
+    throw new Error(`open-pr only switches models within one provider: ${oldModel} to ${newModel} needs different SDK code, so change it by hand.`);
+  }
+  const last = (m) => m.slice(m.lastIndexOf("/") + 1);
+  const ids = checkSwitchIds(last(a.model), last(b.model));
+  return prefix(a.model) ? { ...ids, prefix: prefix(a.model) } : ids;
+}
+async function run({ env, today, log, client, github }) {
   const workspace = env.GITHUB_WORKSPACE ?? process.cwd();
   const summary = async (markdown) => {
     if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `${markdown}
@@ -1369,7 +1710,10 @@ async function run({ env, today, log, client }) {
     else log(markdown);
   };
   const failOn = oneOf(input("fail-on", env) || "retired", "fail-on", ["retired", "retiring", "none"]);
-  const report = buildReport(await scanDirectory(resolve(workspace, input("path", env) || ".")), env.GITHUB_REPOSITORY ?? workspace, today);
+  const openPr = oneOf(input("open-pr", env) || "false", "open-pr", ["true", "false"]) === "true";
+  const scanRoot = resolve(workspace, input("path", env) || ".");
+  const scan = await scanDirectory(scanRoot);
+  const report = buildReport(scan, env.GITHUB_REPOSITORY ?? workspace, today);
   const check = buildCheck(report, null);
   await summary(`## AI Change Guard: ${check.title}
 
@@ -1379,8 +1723,13 @@ ${check.summary}`);
   const prompts = input("prompts", env);
   const oldModel = input("old-model", env);
   const newModel = input("new-model", env);
+  if (openPr && !(prompts && oldModel && newModel)) {
+    throw new Error('open-pr needs a replay as proof: set "prompts", "old-model" and "new-model".');
+  }
   if (prompts || oldModel || newModel) {
     if (!prompts || !oldModel || !newModel) throw new Error('A replay needs all three inputs: "prompts", "old-model" and "new-model".');
+    const ids = openPr ? switchIds(oldModel, newModel) : void 0;
+    const plan = ids ? await planSwitch(scanRoot, scan.findings, ids.from, ids.to, ids.prefix ? { prefix: ids.prefix } : {}) : void 0;
     const replayFailOn = oneOf(input("replay-fail-on", env) || "broken", "replay-fail-on", ["broken", "changed", "none"]);
     const runs = positive(input("runs", env) || "3", "runs");
     const items = await loadGoldenSet(resolve(workspace, prompts));
@@ -1399,13 +1748,40 @@ ${check.summary}`);
     const replayFailed = replayFailOn === "broken" && broken > 0 || replayFailOn === "changed" && broken + changed > 0;
     log(`${replayFailed ? "::error::" : ""}AI Change Guard replay: ${replay.totals.same} same, ${changed} changed, ${broken} broken`);
     failed = failed || replayFailed;
+    if (ids && plan) {
+      const notice = (text) => log(`::notice::AI Change Guard: ${text}`);
+      if (replayFailed || broken > 0 || replay.totals.error > 0) {
+        notice("no pull request, because the replay did not pass (see the Summary).");
+      } else if (plan.edits.length === 0) {
+        notice(`no pull request, because no code uses ${ids.from} as a plain model ID${plan.skipped.length ? ` (${plan.skipped.length} use(s) need a manual change)` : ""}.`);
+      } else {
+        const token = input("github-token", env) || env.GITHUB_TOKEN || "";
+        if (!github && !token) throw new Error('open-pr needs a token: keep the default "github-token" input or pass one.');
+        const repo = env.GITHUB_REPOSITORY ?? "";
+        const result = await openEvidencePr({
+          api: github ?? githubApi(token, env.GITHUB_API_URL),
+          repo,
+          ref: env.GITHUB_REF ?? "",
+          sha: env.GITHUB_SHA ?? "",
+          workspace,
+          scanPath: relative2(workspace, scanRoot).split(sep2).join("/"),
+          plan,
+          replay
+        });
+        if (result.action === "skipped") notice(`no pull request. ${result.reason}`);
+        else {
+          log(`AI Change Guard ${result.action} pull request #${result.number}: ${result.url}`);
+          await summary(`**Evidence pull request ${result.action}:** [#${result.number}](${result.url})`);
+        }
+      }
+    }
   }
   return failed ? 1 : 0;
 }
 if (process.env.GITHUB_ACTIONS === "true") {
   run({ env: process.env, today: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10), log: (line) => console.log(line) }).then(
-    (code) => {
-      process.exitCode = code;
+    (code2) => {
+      process.exitCode = code2;
     },
     (error) => {
       console.log(`::error::${error instanceof Error ? error.message : String(error)}`);
@@ -1416,5 +1792,6 @@ if (process.env.GITHUB_ACTIONS === "true") {
 export {
   input,
   run,
-  scanFails
+  scanFails,
+  switchIds
 };

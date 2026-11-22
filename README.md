@@ -4,6 +4,7 @@ AI providers retire models on a schedule. When a model you call is retired, requ
 
 - **Scan:** finds model IDs and deprecated AI APIs in code and config (Python, JS/TS, Go, Java, YAML, JSON, `.env` and more) and checks them against a catalog of official retirement dates.
 - **Replay:** runs your own prompts on the old and new model and flags broken JSON, changed tool calls, missing content, new refusals and drifting answers.
+- **Switch:** once the replay passes, changes the model ID across your code, or opens a pull request with the replay report as proof.
 - **Token Saver:** points out common token waste (no output limit, no prompt caching, cache-breaking prompts, unbatched loops).
 - **Runs where you are:** a CLI on your machine and a GitHub Action in your CI. Your code and API keys never leave your machine or runner.
 
@@ -44,6 +45,17 @@ node packages/scanner/dist/cli.js replay --set prompts.jsonl --old openai:gpt-4o
 
 Every prompt gets a verdict: same, changed, broken, or could not compare, with the reason. A spend cap (`--max-calls`, default 500) stops a run before it starts if it would make too many calls. Providers: OpenAI, Anthropic, Google Gemini, Groq, OpenRouter, Mistral and Ollama.
 
+## Switch the model in your code
+
+After a replay passes, change every exact use of the old model ID:
+
+```
+node packages/scanner/dist/cli.js switch ./my-app --from gpt-4o --to gpt-6-luna          # shows what would change
+node packages/scanner/dist/cli.js switch ./my-app --from gpt-4o --to gpt-6-luna --write  # changes the files
+```
+
+Only string literals and config values that are exactly the model ID change (a gateway prefix such as `openai/` is kept), so `gpt-4o` never touches `gpt-4o-mini`. Fine-tuned models, Bedrock IDs and Azure deployment names are listed for you to change by hand.
+
 ## GitHub Action
 
 ```yaml
@@ -53,7 +65,7 @@ Every prompt gets a verdict: same, changed, broken, or could not compare, with t
     fail-on: retired
 ```
 
-Results appear in the run's Summary tab. The Action can also run a replay with keys from your repository secrets; see [action/README.md](action/README.md).
+Results appear in the run's Summary tab. The Action can also run a replay with keys from your repository secrets, and open a pull request that switches the model once the replay passes; see [action/README.md](action/README.md).
 
 ## The retirement catalog
 

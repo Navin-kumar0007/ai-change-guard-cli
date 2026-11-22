@@ -42,6 +42,48 @@ Providers: `openai`, `anthropic`, `google`, `groq`, `openrouter`, `mistral`, `ol
 
 Pull requests from forks do not receive your secrets, so the replay step cannot run on them.
 
+## Open a pull request that switches the model (evidence PR)
+
+Add `open-pr: true` to a replay. When every prompt passes (nothing broken, no errors), the Action commits the new model ID to a branch named `ai-change-guard/<old>-to-<new>` and opens a pull request whose description is the replay report: the proof that the switch is safe on your real prompts.
+
+```yaml
+# .github/workflows/model-switch.yml
+name: Test and propose a model switch
+on:
+  schedule:
+    - cron: "0 3 * * 1"   # every Monday
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  switch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Navin-kumar0007/ai-change-guard-cli@v1
+        with:
+          fail-on: none
+          prompts: tests/golden.jsonl
+          old-model: openai:gpt-4o
+          new-model: openai:gpt-6-luna
+          open-pr: true
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+```
+
+Also turn on **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests**.
+
+How it behaves:
+
+- It only runs on the default branch (push, schedule or manual run), and only if that branch did not move during the run.
+- Only exact uses of the model ID change; fine-tuned models, Bedrock IDs, Azure deployment names and model IDs built at runtime are listed in the PR for you to change by hand. Your code is never sent anywhere: the commit is made through the GitHub API from your own runner.
+- Old and new model must be on the same provider (for example `openai:` to `openai:`). A switch between providers changes SDK code, so it is never automated.
+- Only files committed in the repository and unchanged by earlier steps of the job are committed. A generated or gitignored file such as `.env` is never added to the PR; it is listed for you instead.
+- Through a gateway (for example `openrouter:openai/gpt-4o`), only uses written behind that same prefix change, because that is the route the replay tested. Comments that mention the model are left as they are.
+- One pull request per switch. Later runs refresh the report, and rebuild the branch when the default branch moved on, but never push over commits people added. If you close the PR without merging, no new one is opened; after a merge, a later use of the old model gets a new PR.
+- A PR opened with the default `github.token` does not start other workflows. To run your CI on it, pass a GitHub App or personal token as `github-token`, or close and reopen the PR.
+
 ## Inputs
 
 | Input | Default | Meaning |
@@ -54,6 +96,8 @@ Pull requests from forks do not receive your secrets, so the replay step cannot 
 | `concurrency` | `2` | Calls in flight; use `1` on free-tier keys |
 | `max-calls` | `300` | Spend cap for one replay |
 | `replay-fail-on` | `broken` | Fail when a prompt is `broken`, `changed`, or `none` |
+| `open-pr` | `false` | After a passing replay, open a pull request that switches the model |
+| `github-token` | `github.token` | Token for the pull request |
 
 ## Development
 

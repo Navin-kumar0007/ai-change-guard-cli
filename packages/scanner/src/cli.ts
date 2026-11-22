@@ -15,6 +15,7 @@ import {
 } from "@ai-change-guard/replay";
 import { buildReport, formatText, localToday } from "./report.js";
 import { scanDirectory } from "./scan.js";
+import { applySwitch, planSwitch } from "./switch.js";
 
 const run = promisify(execFile);
 const GITHUB_URL_RE = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(?:\.git)?\/?$/;
@@ -23,6 +24,7 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const USAGE = `Usage:
   ai-change-guard scan <folder | https://github.com/owner/repo> [options]
   ai-change-guard replay --set prompts.jsonl --old provider:model --new provider:model [options]
+  ai-change-guard switch <folder> --from <model-id> --to <model-id> [--write]
 
 Scan options:
   --json                      Print the report as JSON
@@ -35,6 +37,10 @@ Replay options:
   --max-calls N               Refuse to start above this many calls (default 500)
   --json | --markdown         Report format (default: text)
   --fail-on broken|changed    Exit with code 1 if any prompt is broken (or changed)
+
+Switch options:
+  --write                     Change the files (without it, only shows what would change)
+  Run a replay first: switch changes model IDs, it does not prove the new model works.
 
 Models look like openai:gpt-4o, anthropic:claude-sonnet-4-5, google:gemini-2.5-flash,
 groq:<model>, openrouter:<model>, mistral:<model> or ollama:<model>. API keys are read
@@ -106,6 +112,40 @@ async function replayCommand(args: string[]): Promise<number> {
   return 0;
 }
 
+async function switchCommand(args: string[]): Promise<number> {
+  let folder: string | undefined;
+  let from: string | undefined;
+  let to: string | undefined;
+  let write = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--from") from = args[++i];
+    else if (arg === "--to") to = args[++i];
+    else if (arg === "--write") write = true;
+    else if (arg.startsWith("-")) throw new UsageError(`Unknown option: ${arg}`);
+    else if (!folder) folder = arg;
+    else throw new UsageError(`Unexpected argument: ${arg}`);
+  }
+  if (!folder || !from || !to) throw new UsageError("switch needs a folder, --from and --to.");
+
+  const root = resolve(folder);
+  const plan = await planSwitch(root, (await scanDirectory(root)).findings, from, to);
+  if (plan.edits.length === 0 && plan.skipped.length === 0) {
+    console.log(`No uses of ${plan.from} found in ${folder}.`);
+    return 0;
+  }
+  for (const e of plan.edits) console.log(`${e.file}:${e.line}\n  - ${e.before}\n  + ${e.after}`);
+  for (const s of plan.skipped) console.log(`${s.file}:${s.line}  not changed (${s.raw}): ${s.reason}`);
+  const files = plan.files.size === 1 ? "1 file" : `${plan.files.size} files`;
+  if (write) {
+    await applySwitch(root, plan);
+    console.log(`\nChanged ${plan.edits.length} line(s) in ${files}.`);
+  } else {
+    console.log(`\n${plan.edits.length} line(s) in ${files} would change. Add --write to change them.`);
+  }
+  return 0;
+}
+
 class UsageError extends Error {}
 
 interface Options {
@@ -148,6 +188,7 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (command === "replay") return replayCommand(rest);
+  if (command === "switch") return switchCommand(rest);
   if (command !== "scan") throw new UsageError(command ? `Unknown command: ${command}` : "Missing command.");
 
   const options = parseArgs(rest);
