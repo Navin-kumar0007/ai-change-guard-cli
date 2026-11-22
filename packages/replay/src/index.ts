@@ -13,3 +13,5 @@ export { applyRepair, formatInstruction, formatRepairMarkdown, formatRepairText,
 export type { RepairAttempt, RepairKind, RepairPatch, RepairReport, RepairResult } from "./repair.js";
 export { importPrompts, sameModel } from "./importer.js";
 export type { ImportOptions, ImportResult } from "./importer.js";
+export { generateStarterSet, parseStarterAnswer, starterRequest } from "./starter.js";
+export type { StarterOptions, StarterResult, StarterSource } from "./starter.js";

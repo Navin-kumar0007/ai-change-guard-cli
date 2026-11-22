@@ -12,6 +12,7 @@ import {
   formatRepairText,
   formatReplayMarkdown,
   formatReplayText,
+  generateStarterSet,
   goldenLine,
   importPrompts,
   loadGoldenSet,
@@ -23,6 +24,7 @@ import {
   type RepairReport,
 } from "@ai-change-guard/replay";
 import { buildReport, formatText, localToday } from "./report.js";
+import { findPrompts } from "./prompts.js";
 import { scanDirectory } from "./scan.js";
 import { applySwitch, planSwitch } from "./switch.js";
 
@@ -35,6 +37,7 @@ const USAGE = `Usage:
   ai-change-guard replay --set prompts.jsonl --old provider:model --new provider:model [options]
   ai-change-guard switch <folder> --from <model-id> --to <model-id> [--write]
   ai-change-guard import <log-file> --out golden.jsonl [--model <model-id>] [--limit N]
+  ai-change-guard starter <folder> --model provider:model --out golden.jsonl [--count N]
 
 Scan options:
   --json                      Print the report as JSON
@@ -56,6 +59,13 @@ Helicone, OpenTelemetry, or raw OpenAI / Anthropic / Gemini request logs):
   --out FILE                  Golden set to write (a new file)
   --model ID                  Keep only calls to this model
   --limit N                   Keep at most N prompts, spread over the log (default 50)
+
+Starter options (no logs yet: finds the system prompts in your code and has a model write
+realistic user messages for each; one call per prompt, on your own key):
+  --model provider:model      Model that writes the messages
+  --out FILE                  Golden set to write (a new file)
+  --count N                   Messages per system prompt (default 8)
+  --max-prompts N             Use at most N system prompts (default 5)
 
 Switch options:
   --write                     Change the files (without it, only shows what would change)
@@ -237,6 +247,71 @@ async function importCommand(args: string[]): Promise<number> {
   return 0;
 }
 
+async function starterCommand(args: string[]): Promise<number> {
+  let folder: string | undefined;
+  let out: string | undefined;
+  let model: string | undefined;
+  let count = 8;
+  let maxPrompts = 5;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    const value = () => {
+      const v = args[++i];
+      if (!v || v.startsWith("-")) throw new UsageError(`${arg} needs a value.`);
+      return v;
+    };
+    if (arg === "--out") out = value();
+    else if (arg === "--model") model = value();
+    else if (arg === "--count") count = positiveInt(value(), "--count");
+    else if (arg === "--max-prompts") maxPrompts = positiveInt(value(), "--max-prompts");
+    else if (arg.startsWith("-")) throw new UsageError(`Unknown option: ${arg}`);
+    else if (!folder) folder = arg;
+    else throw new UsageError(`Unexpected argument: ${arg}`);
+  }
+  if (!folder || !out || !model) throw new UsageError("starter needs a folder, --model and --out.");
+  parseModelRef(model);
+  if (await stat(resolve(out)).catch(() => null)) throw new UsageError(`${out} already exists; choose a new file name.`);
+
+  const found = await findPrompts(resolve(folder));
+  if (found.length === 0) {
+    console.log("No system prompts found in the code. Record real calls instead (packages/recorder) and use `import`, or write prompts by hand.");
+    return 1;
+  }
+  const used = found.slice(0, maxPrompts);
+  console.log(`Found ${found.length} system prompt${found.length === 1 ? "" : "s"}${found.length > used.length ? `; using the first ${used.length}` : ""}:`);
+  for (const p of used) {
+    console.log(`  ${p.file}:${p.line}  ${p.name}: ${p.text.replace(/\s+/g, " ").slice(0, 70)}${p.text.length > 70 ? "…" : ""}`);
+    if (p.templated) console.log("    has placeholders such as {name}: fill them with real values in the golden set before a replay");
+    if (p.partial) console.log("    is joined with a variable in the code: only its fixed text is used, so check it in the golden set");
+  }
+  console.error(`${used.length} call${used.length === 1 ? "" : "s"} to ${model} on your API key.`);
+
+  // Ids must be unique: src/bot.py and src-bot.py would otherwise both become src-bot.py-4.
+  const ids = new Set<string>();
+  const sources = used.map((p) => {
+    const base = `${p.file}-${p.line}`.replace(/[^A-Za-z0-9._-]+/g, "-");
+    let id = base;
+    for (let n = 2; ids.has(id); n++) id = `${base}-${n}`;
+    ids.add(id);
+    return { id, system: p.text, json: p.json };
+  });
+  const result = await generateStarterSet({ sources, model, client: withRetry(createClient()), count });
+  for (const f of result.failures) console.error(`  could not generate for ${f.id}: ${f.error}`);
+  if (result.items.length === 0) {
+    console.error(`Nothing written: every call to ${model} failed (see above).`);
+    return 1;
+  }
+  try {
+    await writeFile(resolve(out), result.items.map(goldenLine).join("\n") + "\n", { flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new UsageError(`${out} already exists; choose a new file name.`);
+    throw error;
+  }
+  console.log(`Wrote ${result.items.length} generated prompts to ${out}.`);
+  console.log("The user messages are made up by a model: read them, keep the realistic ones, and replace the set with real calls (recorder + import) when you can.");
+  return 0;
+}
+
 class UsageError extends Error {}
 
 interface Options {
@@ -281,6 +356,7 @@ async function main(argv: string[]): Promise<number> {
   if (command === "replay") return replayCommand(rest);
   if (command === "switch") return switchCommand(rest);
   if (command === "import") return importCommand(rest);
+  if (command === "starter") return starterCommand(rest);
   if (command !== "scan") throw new UsageError(command ? `Unknown command: ${command}` : "Missing command.");
 
   const options = parseArgs(rest);

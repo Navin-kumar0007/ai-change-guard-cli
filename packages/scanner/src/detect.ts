@@ -134,6 +134,8 @@ const AI_MARKERS = [
   "anthropic",
   "google.genai",
   "google.generativeai",
+  "from google import genai",
+  "from google import generativeai",
   "@google/genai",
   "@google/generative-ai",
   "vertexai",

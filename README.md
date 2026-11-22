@@ -4,6 +4,7 @@ AI providers retire models on a schedule. When a model you call is retired, requ
 
 - **Scan:** finds model IDs and deprecated AI APIs in code and config (Python, JS/TS, Go, Java, YAML, JSON, `.env` and more) and checks them against a catalog of official retirement dates.
 - **Replay:** runs your own prompts on the old and new model and flags broken JSON, changed tool calls, missing content, new refusals and drifting answers.
+- **Starter set:** no logs yet? Finds the system prompts in your code and generates realistic test messages for them.
 - **Import:** turns logs you already have (Langfuse, Helicone, OpenTelemetry, raw request logs) into a golden set, so you don't write tests by hand.
 - **Prompt Repair:** when the new model breaks your JSON format, finds a prompt change that fixes it and proves it with a re-test.
 - **Switch:** once the replay passes, changes the model ID across your code, or opens a pull request with the replay report as proof.
@@ -44,7 +45,13 @@ Get a golden set of real prompts. The quickest way is from logs you already have
 node packages/scanner/dist/cli.js import exported-logs.jsonl --out golden.jsonl --model gpt-4o
 ```
 
-`import` reads JSON or JSONL exports from Langfuse, Helicone and OpenTelemetry (GenAI spans), or plain logs of OpenAI, Anthropic or Gemini requests, by recognising the request inside each record. It keeps up to 50 distinct prompts spread over the log (`--limit`), skips tool-call conversations and images, and adds checks from the logged answers: a JSON answer becomes a JSON check, a tool call becomes a tool check. The file holds real user messages, so read it before you commit it. No logs yet? Add the [recorder](packages/recorder/README.md) to your app (three lines in Node.js or Python): it saves your real AI calls to `ai-calls.jsonl` without headers or API keys, ready for `import`. You can also write prompts by hand (see [`examples/support-bot.jsonl`](examples/support-bot.jsonl)).
+`import` reads JSON or JSONL exports from Langfuse, Helicone and OpenTelemetry (GenAI spans), or plain logs of OpenAI, Anthropic or Gemini requests, by recognising the request inside each record. It keeps up to 50 distinct prompts spread over the log (`--limit`), skips tool-call conversations and images, and adds checks from the logged answers: a JSON answer becomes a JSON check, a tool call becomes a tool check. The file holds real user messages, so read it before you commit it. No logs at all yet? `starter` finds the system prompts in your code and has a model write realistic user messages for each one (one call per prompt, on your own key):
+
+```
+node packages/scanner/dist/cli.js starter ./my-app --model openai:gpt-4o-mini --out golden.jsonl
+```
+
+The system prompts stay exactly as written in your code, and a JSON check is added where your code expects JSON. The user messages are made up, so read them and replace the set with real calls when you can. To collect real calls, add the [recorder](packages/recorder/README.md) to your app (three lines in Node.js or Python): it saves your real AI calls to `ai-calls.jsonl` without headers or API keys, ready for `import`. You can also write prompts by hand (see [`examples/support-bot.jsonl`](examples/support-bot.jsonl)).
 
 Then set your provider key in the environment and run:
 
