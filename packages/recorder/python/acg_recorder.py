@@ -9,7 +9,8 @@ Then turn the file into a golden set:
 
     ai-change-guard import ai-calls.jsonl --out golden.jsonl
 
-It wraps httpx (used by the OpenAI, Anthropic and Google Gen AI Python SDKs) and saves the JSON
+It wraps httpx and httpx2 (used by the OpenAI, Anthropic and Google Gen AI Python SDKs; newer
+google-genai versions send through httpx2, pydantic's fork of httpx) and saves the JSON
 request and response bodies of calls to known AI APIs. It never saves headers (where API keys
 live) or the URL query (Gemini can carry ?key=), it never changes what your app sends or
 receives, and a recorder error never reaches your code. Set ACG_RECORD=0 to turn it off.
@@ -57,9 +58,13 @@ def record(
     global _active
     if os.environ.get("ACG_RECORD") == "0":
         return lambda: None
-    try:
-        import httpx
-    except ImportError:
+    modules = []
+    for name in ("httpx", "httpx2"):
+        try:
+            modules.append(__import__(name))
+        except ImportError:
+            pass
+    if not modules:
         return lambda: None
     if _active is not None:
         return _active
@@ -137,29 +142,36 @@ def record(
         except Exception:
             pass  # Never let recording break the app.
 
-    original_send = httpx.Client.send
-    original_async_send = httpx.AsyncClient.send
+    restore = []
 
-    def send(self, request, *args, **kwargs):  # type: ignore[no-untyped-def]
-        response = original_send(self, request, *args, **kwargs)
-        capture(request, response, bool(kwargs.get("stream", False)))
-        return response
+    def wrap(module: Any) -> None:
+        original_send = module.Client.send
+        original_async_send = module.AsyncClient.send
 
-    async def async_send(self, request, *args, **kwargs):  # type: ignore[no-untyped-def]
-        response = await original_async_send(self, request, *args, **kwargs)
-        capture(request, response, bool(kwargs.get("stream", False)))
-        return response
+        def send(self, request, *args, **kwargs):  # type: ignore[no-untyped-def]
+            response = original_send(self, request, *args, **kwargs)
+            capture(request, response, bool(kwargs.get("stream", False)))
+            return response
 
-    httpx.Client.send = send  # type: ignore[method-assign]
-    httpx.AsyncClient.send = async_send  # type: ignore[method-assign]
+        async def async_send(self, request, *args, **kwargs):  # type: ignore[no-untyped-def]
+            response = await original_async_send(self, request, *args, **kwargs)
+            capture(request, response, bool(kwargs.get("stream", False)))
+            return response
+
+        module.Client.send = send
+        module.AsyncClient.send = async_send
+        restore.append((module.Client, send, original_send))
+        restore.append((module.AsyncClient, async_send, original_async_send))
+
+    for module in modules:
+        wrap(module)
 
     def stop() -> None:
         global _active
         state["stopped"] = True
-        if httpx.Client.send is send:
-            httpx.Client.send = original_send  # type: ignore[method-assign]
-        if httpx.AsyncClient.send is async_send:
-            httpx.AsyncClient.send = original_async_send  # type: ignore[method-assign]
+        for cls, ours, original in restore:
+            if cls.send is ours:
+                cls.send = original
         _active = None
 
     _active = stop

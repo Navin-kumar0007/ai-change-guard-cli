@@ -151,5 +151,31 @@ class RecorderTest(unittest.TestCase):
         self.assertIs(httpx.Client.send, original)
 
 
+try:
+    import httpx2
+except ImportError:  # pragma: no cover
+    httpx2 = None
+
+
+@unittest.skipIf(httpx2 is None, "httpx2 is not installed")
+class Httpx2Test(unittest.TestCase):
+    """google-genai 3.x sends through httpx2, pydantic's fork of httpx."""
+
+    def test_records_httpx2_calls(self):
+        with tempfile.TemporaryDirectory() as d:
+            file = os.path.join(d, "calls.jsonl")
+            stop = acg_recorder.record(file)
+            try:
+                t = httpx2.MockTransport(lambda r: httpx2.Response(200, json=ANSWER))
+                with httpx2.Client(transport=t) as c:
+                    c.post("https://generativelanguage.googleapis.com/v1/models/gemini-3.1-flash-lite:generateContent", json={"contents": []})
+            finally:
+                stop()
+            with open(file, encoding="utf-8") as f:
+                (entry,) = [json.loads(line) for line in f if line.strip()]
+            self.assertEqual(entry["model"], "gemini-3.1-flash-lite")
+            self.assertEqual(entry["response"], ANSWER)
+
+
 if __name__ == "__main__":
     unittest.main()
