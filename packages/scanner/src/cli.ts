@@ -7,7 +7,6 @@ import { promisify } from "node:util";
 import { createClient, parseModelRef, withRetry } from "@ai-change-guard/llm";
 import {
   applyRepair,
-  buildReplayReport,
   formatRepairMarkdown,
   formatRepairText,
   formatReplayMarkdown,
@@ -17,11 +16,7 @@ import {
   importPrompts,
   loadGoldenSet,
   plannedCalls,
-  plannedRepairCalls,
-  repairable,
-  runRepair,
-  runReplay,
-  type RepairReport,
+  runReplayJob,
 } from "@ai-change-guard/replay";
 import { buildReport, formatText, localToday } from "./report.js";
 import { findPrompts } from "./prompts.js";
@@ -132,31 +127,21 @@ async function replayCommand(args: string[]): Promise<number> {
     if (items.length < 20) console.error("Tip: 20–50 real prompts give a far more reliable result.");
   }
 
-  const client = withRetry(createClient());
-  const records = await runReplay({
+  const job = await runReplayJob({
     items,
     oldModel,
     newModel,
     runs,
     concurrency,
     maxCalls,
-    client,
-    onProgress: format === "text" && process.stderr.isTTY ? (done, all) => process.stderr.write(`\rRunning ${done}/${all} calls`) : undefined,
+    client: withRetry(createClient()),
+    repair,
+    ...(format === "text" && process.stderr.isTTY ? { onProgress: (done: number, all: number) => process.stderr.write(`\rRunning ${done}/${all} calls`) } : {}),
   });
   if (format === "text" && process.stderr.isTTY) process.stderr.write("\n");
-
-  const report = buildReplayReport(items, records, { oldModel, newModel, runs });
-  let repaired: RepairReport | undefined;
-  if (repair && report.items.some(repairable)) {
-    const left = maxCalls - records.length;
-    const needed = plannedRepairCalls(items, report.items, newModel, runs);
-    if (needed > left) {
-      console.error(`Prompt Repair skipped: it could need ${needed} calls, and only ${left} are left under --max-calls ${maxCalls}.`);
-    } else {
-      if (format === "text") console.error("Trying Prompt Repair on the prompts whose answer format broke...");
-      repaired = await runRepair({ items, records, results: report.items, newModel, client, runs, concurrency, maxCalls: left });
-    }
-  }
+  const { report } = job;
+  const repaired = job.repair;
+  if (job.repairSkipped) console.error(job.repairSkipped);
   if (format === "json") console.log(JSON.stringify(repaired ? { ...report, repair: repaired } : report, null, 2));
   else if (format === "markdown") console.log([formatReplayMarkdown(report), repaired ? formatRepairMarkdown(repaired) : ""].filter(Boolean).join("\n\n"));
   else console.log([formatReplayText(report), repaired ? formatRepairText(repaired) : ""].filter(Boolean).join("\n\n"));

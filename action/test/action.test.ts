@@ -116,7 +116,7 @@ describe("Prompt Repair in the Action", () => {
     const inputs = { prompts: "golden.jsonl", "old-model": "openai:old", "new-model": "openai:new", runs: "2", concurrency: "1", "max-calls": "5", repair: "true" };
     const { code, lines } = await runAction(files, inputs, client);
     expect(code).toBe(1);
-    expect(lines).toContain("::warning::AI Change Guard Prompt Repair skipped: it could need 4 calls, and only 1 are left under max-calls 5.");
+    expect(lines).toContain("::warning::AI Change Guard Prompt Repair skipped: it could need 4 calls, and only 1 are left under the limit of 5.");
     expect(lines.at(-1)).toBe("::error::AI Change Guard replay: 0 same, 0 changed, 1 broken");
   });
 });

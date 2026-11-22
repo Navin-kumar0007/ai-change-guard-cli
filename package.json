@@ -7,7 +7,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "tsc -b packages/scanner packages/recorder",
+    "build": "tsc -b packages/scanner packages/recorder packages/mcp",
     "build:action": "npm run build && tsc -p action && node action/build.mjs",
     "test": "npm run build && vitest run",
     "scan": "node packages/scanner/dist/cli.js scan"

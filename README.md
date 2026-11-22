@@ -9,6 +9,7 @@ AI providers retire models on a schedule. When a model you call is retired, requ
 - **Prompt Repair:** when the new model breaks your JSON format, finds a prompt change that fixes it and proves it with a re-test.
 - **Switch:** once the replay passes, changes the model ID across your code, or opens a pull request with the replay report as proof.
 - **Token Saver:** points out common token waste (no output limit, no prompt caching, cache-breaking prompts, unbatched loops).
+- **Inside your AI assistant:** an [MCP server](packages/mcp/README.md) lets Claude Code, Cursor and other MCP clients scan your repo, look up retirement dates, plan a switch and test it.
 - **Runs where you are:** a CLI on your machine and a GitHub Action in your CI. Your code and API keys never leave your machine or runner.
 
 ## Quick start
@@ -97,6 +98,7 @@ Results appear in the run's Summary tab. The Action can also run a replay with k
 | `packages/catalog` | Retirement data and lookup |
 | `packages/scanner` | File walker, model detection, report, the `ai-change-guard` CLI |
 | `packages/llm` | Minimal provider client (fetch only, no SDKs), retries that honour rate limits |
+| `packages/mcp` | MCP server for AI coding assistants (Claude Code, Cursor): scan, look up, plan and test a model switch |
 | `packages/recorder` | Three-line recorder (Node.js and Python) that saves real AI calls for `import` |
 | `packages/replay` | Golden sets, replay runner, verdict rules, reports |
 | `action` | The GitHub Action |

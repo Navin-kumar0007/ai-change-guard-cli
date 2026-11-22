@@ -1,16 +1,7 @@
 import { appendFile } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { createClient, parseModelRef, withRetry, type LlmClient } from "@ai-change-guard/llm";
-import {
-  buildReplayReport,
-  formatRepairMarkdown,
-  formatReplayMarkdown,
-  loadGoldenSet,
-  plannedRepairCalls,
-  repairable,
-  runRepair,
-  runReplay,
-} from "@ai-change-guard/replay";
+import { formatRepairMarkdown, formatReplayMarkdown, loadGoldenSet, runReplayJob } from "@ai-change-guard/replay";
 import { buildCheck, buildReport, checkSwitchIds, planSwitch, scanDirectory, type Report } from "@ai-change-guard/scanner";
 import { githubApi, openEvidencePr, type GitHubApi } from "./pr.js";
 
@@ -105,34 +96,15 @@ export async function run({ env, today, log, client, github }: RunDeps): Promise
     const maxCalls = positive(input("max-calls", env) || "300", "max-calls");
     const llm = client ?? withRetry(createClient({ env }));
     const items = await loadGoldenSet(resolve(workspace, prompts));
-    const records = await runReplay({
-      items,
-      oldModel,
-      newModel,
-      runs,
-      concurrency,
-      maxCalls,
-      client: llm,
-    });
-    const replay = buildReplayReport(items, records, { oldModel, newModel, runs });
+    const job = await runReplayJob({ items, oldModel, newModel, runs, concurrency, maxCalls, client: llm, repair });
+    const replay = job.report;
     await summary(formatReplayMarkdown(replay));
-    if (repair && replay.items.some(repairable)) {
-      // Repair spends what the replay left under max-calls; a repair problem never hides the replay result.
-      const left = maxCalls - records.length;
-      const needed = plannedRepairCalls(items, replay.items, newModel, runs);
-      if (needed > left) {
-        log(`::warning::AI Change Guard Prompt Repair skipped: it could need ${needed} calls, and only ${left} are left under max-calls ${maxCalls}.`);
-      } else {
-        try {
-          const repaired = await runRepair({ items, records, results: replay.items, newModel, client: llm, runs, concurrency, maxCalls: left });
-          await summary(formatRepairMarkdown(repaired));
-          const fixed = repaired.results.filter((r) => r.fixed).length;
-          log(`AI Change Guard Prompt Repair: ${fixed} of ${repaired.results.length} format breaks fixed (${repaired.calls} extra calls); the fixes are in the Summary`);
-        } catch (error) {
-          log(`::warning::AI Change Guard Prompt Repair failed: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
+    if (job.repair) {
+      await summary(formatRepairMarkdown(job.repair));
+      const fixed = job.repair.results.filter((r) => r.fixed).length;
+      log(`AI Change Guard Prompt Repair: ${fixed} of ${job.repair.results.length} format breaks fixed (${job.repair.calls} extra calls); the fixes are in the Summary`);
     }
+    if (job.repairSkipped) log(`::warning::AI Change Guard ${job.repairSkipped}`);
     const { broken, changed } = replay.totals;
     const replayFailed = (replayFailOn === "broken" && broken > 0) || (replayFailOn === "changed" && broken + changed > 0);
     log(`${replayFailed ? "::error::" : ""}AI Change Guard replay: ${replay.totals.same} same, ${changed} changed, ${broken} broken`);

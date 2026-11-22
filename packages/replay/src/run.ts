@@ -22,10 +22,13 @@ export interface ReplayOptions {
   defaultMaxTokens?: number;
   /** Which models to call; a repair re-test calls only the new one. Default: both. */
   sides?: Side[];
+  /** Stops starting new calls once aborted; the replay then rejects with a ReplayCancelledError. */
+  signal?: AbortSignal;
   onProgress?: (done: number, total: number) => void;
 }
 
 export class SpendCapError extends Error {}
+export class ReplayCancelledError extends Error {}
 
 export function plannedCalls(items: number, runs: number, sides = 2): number {
   return items * runs * sides;
@@ -72,7 +75,7 @@ export async function runReplay(options: ReplayOptions): Promise<RunRecord[]> {
   let next = 0;
   let done = 0;
   const worker = async () => {
-    while (next < tasks.length) {
+    while (next < tasks.length && !options.signal?.aborted) {
       const index = next++;
       results[index] = await tasks[index]!();
       done++;
@@ -80,5 +83,6 @@ export async function runReplay(options: ReplayOptions): Promise<RunRecord[]> {
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, worker));
+  if (options.signal?.aborted) throw new ReplayCancelledError(`Replay cancelled after ${done} of ${total} calls.`);
   return results;
 }

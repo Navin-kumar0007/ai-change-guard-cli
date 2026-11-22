@@ -457,6 +457,8 @@ function similarity(a, b) {
 // packages/replay/dist/run.js
 var SpendCapError = class extends Error {
 };
+var ReplayCancelledError = class extends Error {
+};
 function plannedCalls(items, runs, sides = 2) {
   return items * runs * sides;
 }
@@ -500,7 +502,7 @@ async function runReplay(options) {
   let next = 0;
   let done = 0;
   const worker = async () => {
-    while (next < tasks.length) {
+    while (next < tasks.length && !options.signal?.aborted) {
       const index = next++;
       results[index] = await tasks[index]();
       done++;
@@ -508,6 +510,8 @@ async function runReplay(options) {
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, worker));
+  if (options.signal?.aborted)
+    throw new ReplayCancelledError(`Replay cancelled after ${done} of ${total} calls.`);
   return results;
 }
 
@@ -803,7 +807,8 @@ async function runRepair(options) {
       runs,
       ...options.concurrency ? { concurrency: options.concurrency } : {},
       maxCalls: maxCalls - calls,
-      sides: ["new"]
+      sides: ["new"],
+      ...options.signal ? { signal: options.signal } : {}
     });
     calls += records.length;
     const reference = [...oldRecords, ...records];
@@ -846,6 +851,36 @@ function formatRepairMarkdown(report) {
     lines.push("", `**Change for ${code(r.id)}:** add this to the end of the system prompt${r.patch.jsonMode ? ', and turn on JSON output (`response_format: {type: "json_object"}` or `responseMimeType: "application/json"`)' : ""}:`, "", "```text", r.patch.systemAddition, "```");
   }
   return lines.join("\n");
+}
+
+// packages/replay/dist/job.js
+async function runReplayJob(job) {
+  const { items, oldModel, newModel, runs, maxCalls, concurrency, client } = job;
+  const records = await runReplay({
+    items,
+    oldModel,
+    newModel,
+    runs,
+    concurrency,
+    maxCalls,
+    client,
+    ...job.signal ? { signal: job.signal } : {},
+    ...job.onProgress ? { onProgress: job.onProgress } : {}
+  });
+  const report = buildReplayReport(items, records, { oldModel, newModel, runs });
+  if (!job.repair || !report.items.some(repairable))
+    return { report, records };
+  const left = maxCalls - records.length;
+  const needed = plannedRepairCalls(items, report.items, newModel, runs);
+  if (needed > left) {
+    return { report, records, repairSkipped: `Prompt Repair skipped: it could need ${needed} calls, and only ${left} are left under the limit of ${maxCalls}.` };
+  }
+  try {
+    const repair = await runRepair({ items, records, results: report.items, newModel, client, runs, concurrency, maxCalls: left, ...job.signal ? { signal: job.signal } : {} });
+    return { report, records, repair };
+  } catch (error) {
+    return { report, records, repairSkipped: `Prompt Repair failed: ${error instanceof Error ? error.message : String(error)}` };
+  }
 }
 
 // packages/scanner/dist/detect.js
@@ -1854,33 +1889,15 @@ ${check.summary}`);
     const maxCalls = positive(input("max-calls", env) || "300", "max-calls");
     const llm = client ?? withRetry(createClient({ env }));
     const items = await loadGoldenSet(resolve(workspace, prompts));
-    const records = await runReplay({
-      items,
-      oldModel,
-      newModel,
-      runs,
-      concurrency,
-      maxCalls,
-      client: llm
-    });
-    const replay = buildReplayReport(items, records, { oldModel, newModel, runs });
+    const job = await runReplayJob({ items, oldModel, newModel, runs, concurrency, maxCalls, client: llm, repair });
+    const replay = job.report;
     await summary(formatReplayMarkdown(replay));
-    if (repair && replay.items.some(repairable)) {
-      const left = maxCalls - records.length;
-      const needed = plannedRepairCalls(items, replay.items, newModel, runs);
-      if (needed > left) {
-        log(`::warning::AI Change Guard Prompt Repair skipped: it could need ${needed} calls, and only ${left} are left under max-calls ${maxCalls}.`);
-      } else {
-        try {
-          const repaired = await runRepair({ items, records, results: replay.items, newModel, client: llm, runs, concurrency, maxCalls: left });
-          await summary(formatRepairMarkdown(repaired));
-          const fixed = repaired.results.filter((r) => r.fixed).length;
-          log(`AI Change Guard Prompt Repair: ${fixed} of ${repaired.results.length} format breaks fixed (${repaired.calls} extra calls); the fixes are in the Summary`);
-        } catch (error) {
-          log(`::warning::AI Change Guard Prompt Repair failed: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
+    if (job.repair) {
+      await summary(formatRepairMarkdown(job.repair));
+      const fixed = job.repair.results.filter((r) => r.fixed).length;
+      log(`AI Change Guard Prompt Repair: ${fixed} of ${job.repair.results.length} format breaks fixed (${job.repair.calls} extra calls); the fixes are in the Summary`);
     }
+    if (job.repairSkipped) log(`::warning::AI Change Guard ${job.repairSkipped}`);
     const { broken, changed } = replay.totals;
     const replayFailed = replayFailOn === "broken" && broken > 0 || replayFailOn === "changed" && broken + changed > 0;
     log(`${replayFailed ? "::error::" : ""}AI Change Guard replay: ${replay.totals.same} same, ${changed} changed, ${broken} broken`);

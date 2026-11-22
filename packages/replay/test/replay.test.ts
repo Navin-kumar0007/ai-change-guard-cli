@@ -282,3 +282,19 @@ describe("answer drift needs a baseline", () => {
     expect(two.reasons.map((r) => r.code)).toEqual(["answer-drift"]);
   });
 });
+
+describe("cancelling a replay", () => {
+  it("stops starting new calls once the signal aborts", async () => {
+    const { runReplay: run, ReplayCancelledError: Cancelled } = await import("../src/run.js");
+    const controller = new AbortController();
+    let calls = 0;
+    const client: LlmClient = async () => {
+      calls++;
+      if (calls === 2) controller.abort();
+      return { text: "ok", toolCalls: [], inputTokens: 1, outputTokens: 1, latencyMs: 1, refused: false };
+    };
+    const items = [1, 2, 3, 4].map((i) => ({ id: String(i), messages: [{ role: "user" as const, content: "hi" }] }));
+    await expect(run({ items, oldModel: "openai:a", newModel: "openai:b", client, runs: 1, concurrency: 1, signal: controller.signal })).rejects.toThrow(Cancelled);
+    expect(calls).toBe(2);
+  });
+});

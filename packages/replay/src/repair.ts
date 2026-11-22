@@ -49,6 +49,7 @@ export interface RepairOptions {
   runs: number;
   concurrency?: number;
   maxCalls?: number;
+  signal?: AbortSignal;
 }
 
 const MAX_SCHEMA_CHARS = 2000;
@@ -128,6 +129,7 @@ export async function runRepair(options: RepairOptions): Promise<RepairReport> {
       ...(options.concurrency ? { concurrency: options.concurrency } : {}),
       maxCalls: maxCalls - calls,
       sides: ["new"],
+      ...(options.signal ? { signal: options.signal } : {}),
     });
     calls += records.length;
     const reference = [...oldRecords, ...records];
