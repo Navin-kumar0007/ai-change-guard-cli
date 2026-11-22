@@ -44,7 +44,7 @@ Get a golden set of real prompts. The quickest way is from logs you already have
 node packages/scanner/dist/cli.js import exported-logs.jsonl --out golden.jsonl --model gpt-4o
 ```
 
-`import` reads JSON or JSONL exports from Langfuse, Helicone and OpenTelemetry (GenAI spans), or plain logs of OpenAI, Anthropic or Gemini requests, by recognising the request inside each record. It keeps up to 50 distinct prompts spread over the log (`--limit`), skips tool-call conversations and images, and adds checks from the logged answers: a JSON answer becomes a JSON check, a tool call becomes a tool check. The file holds real user messages, so read it before you commit it. You can also write prompts by hand (see [`examples/support-bot.jsonl`](examples/support-bot.jsonl)).
+`import` reads JSON or JSONL exports from Langfuse, Helicone and OpenTelemetry (GenAI spans), or plain logs of OpenAI, Anthropic or Gemini requests, by recognising the request inside each record. It keeps up to 50 distinct prompts spread over the log (`--limit`), skips tool-call conversations and images, and adds checks from the logged answers: a JSON answer becomes a JSON check, a tool call becomes a tool check. The file holds real user messages, so read it before you commit it. No logs yet? Add the [recorder](packages/recorder/README.md) to your app (three lines in Node.js or Python): it saves your real AI calls to `ai-calls.jsonl` without headers or API keys, ready for `import`. You can also write prompts by hand (see [`examples/support-bot.jsonl`](examples/support-bot.jsonl)).
 
 Then set your provider key in the environment and run:
 
@@ -90,6 +90,7 @@ Results appear in the run's Summary tab. The Action can also run a replay with k
 | `packages/catalog` | Retirement data and lookup |
 | `packages/scanner` | File walker, model detection, report, the `ai-change-guard` CLI |
 | `packages/llm` | Minimal provider client (fetch only, no SDKs), retries that honour rate limits |
+| `packages/recorder` | Three-line recorder (Node.js and Python) that saves real AI calls for `import` |
 | `packages/replay` | Golden sets, replay runner, verdict rules, reports |
 | `action` | The GitHub Action |
 
