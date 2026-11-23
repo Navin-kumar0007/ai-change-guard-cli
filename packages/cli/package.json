@@ -1,0 +1,40 @@
+{
+  "name": "ai-change-guard",
+  "version": "0.1.0",
+  "description": "Find every AI model in your code, get warned before it is retired, and test the replacement on your real prompts.",
+  "license": "MIT",
+  "keywords": [
+    "ai",
+    "llm",
+    "openai",
+    "anthropic",
+    "gemini",
+    "model-deprecation",
+    "migration"
+  ],
+  "homepage": "https://github.com/Navin-kumar0007/ai-change-guard-cli#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Navin-kumar0007/ai-change-guard-cli.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/Navin-kumar0007/ai-change-guard-cli/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "bin": {
+    "ai-change-guard": "./bin.js"
+  },
+  "files": [
+    "bin.js"
+  ],
+  "dependencies": {
+    "@ai-change-guard/scanner": "0.1.0"
+  }
+}

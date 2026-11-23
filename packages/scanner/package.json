@@ -1,8 +1,32 @@
 {
   "name": "@ai-change-guard/scanner",
   "version": "0.1.0",
+  "description": "Finds every AI model in your code and warns before it is retired, rerouted or shut down.",
   "license": "MIT",
-  "private": true,
+  "keywords": [
+    "ai",
+    "llm",
+    "openai",
+    "anthropic",
+    "gemini",
+    "model-deprecation",
+    "migration"
+  ],
+  "homepage": "https://github.com/Navin-kumar0007/ai-change-guard-cli#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Navin-kumar0007/ai-change-guard-cli.git",
+    "directory": "packages/scanner"
+  },
+  "bugs": {
+    "url": "https://github.com/Navin-kumar0007/ai-change-guard-cli/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -10,10 +34,12 @@
     "ai-change-guard": "./dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "!dist/.tsbuildinfo"
   ],
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@ai-change-guard/catalog": "0.1.0",

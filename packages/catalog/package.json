@@ -1,8 +1,32 @@
 {
   "name": "@ai-change-guard/catalog",
   "version": "0.1.0",
+  "description": "Catalog of AI model and API retirement dates, with a source link for every date.",
   "license": "MIT",
-  "private": true,
+  "keywords": [
+    "ai",
+    "llm",
+    "openai",
+    "anthropic",
+    "gemini",
+    "model-deprecation",
+    "migration"
+  ],
+  "homepage": "https://github.com/Navin-kumar0007/ai-change-guard-cli#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Navin-kumar0007/ai-change-guard-cli.git",
+    "directory": "packages/catalog"
+  },
+  "bugs": {
+    "url": "https://github.com/Navin-kumar0007/ai-change-guard-cli/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -14,9 +38,11 @@
   },
   "files": [
     "dist",
-    "data"
+    "data",
+    "!dist/.tsbuildinfo"
   ],
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b",
+    "prepublishOnly": "npm run build"
   }
 }

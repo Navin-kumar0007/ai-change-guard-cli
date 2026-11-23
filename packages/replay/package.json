@@ -1,8 +1,32 @@
 {
   "name": "@ai-change-guard/replay",
   "version": "0.1.0",
+  "description": "Replays real prompts on an old and a new AI model and reports what changed.",
   "license": "MIT",
-  "private": true,
+  "keywords": [
+    "ai",
+    "llm",
+    "openai",
+    "anthropic",
+    "gemini",
+    "model-deprecation",
+    "migration"
+  ],
+  "homepage": "https://github.com/Navin-kumar0007/ai-change-guard-cli#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Navin-kumar0007/ai-change-guard-cli.git",
+    "directory": "packages/replay"
+  },
+  "bugs": {
+    "url": "https://github.com/Navin-kumar0007/ai-change-guard-cli/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,10 +37,12 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "!dist/.tsbuildinfo"
   ],
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@ai-change-guard/llm": "0.1.0"
