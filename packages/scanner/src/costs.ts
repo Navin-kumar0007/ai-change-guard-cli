@@ -120,6 +120,14 @@ export function priceChangeText(before: TokenPrice, after: TokenPrice): string {
   return i === o ? sign(i) : `input ${sign(i)}, output ${sign(o)}`;
 }
 
+/** True when the change raises the bill (or its new price is unknown): either price goes up, neither goes down. */
+export function isPriceRise(row: Pick<CostRow, "before" | "after">): boolean {
+  if (!row.after) return true;
+  const up = row.after.input > row.before.input || row.after.output > row.before.output;
+  const down = row.after.input < row.before.input || row.after.output < row.before.output;
+  return up && !down;
+}
+
 /** One line for a person: what changes, when, by how much. */
 export function describeCost(row: CostRow): string {
   const subject = row.billedAs && row.kind !== "reroute-billing" ? `${row.id} (served as ${row.billedAs})` : row.id;
@@ -131,6 +139,5 @@ export function describeCost(row: CostRow): string {
     const what = row.kind === "intro-ends" ? `introductory price ${row.daysLeft > 0 ? "ends" : "ended"}` : `price ${row.daysLeft > 0 ? "changes" : "changed"}`;
     return `${subject}: ${what} ${when}; the new price is not published yet (${row.daysLeft > 0 ? "now" : "was"} ${formatPrice(row.before)})`;
   }
-  const up = row.after.input >= row.before.input && row.after.output >= row.before.output;
-  return `${subject}: price ${up ? "rises" : "changes"} ${when}: ${formatPriceMove(row.before, row.after)} (${priceChangeText(row.before, row.after)})`;
+  return `${subject}: price ${isPriceRise(row) ? "rises" : "changes"} ${when}: ${formatPriceMove(row.before, row.after)} (${priceChangeText(row.before, row.after)})`;
 }

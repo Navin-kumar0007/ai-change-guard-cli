@@ -1,10 +1,10 @@
 import { billedPriceOn, callCost, lookupPrice, prices, priceChanges, priceOn, tokenRatio } from "@ai-change-guard/catalog";
 import { describe, expect, it } from "vitest";
 import { buildCheck } from "../src/check.js";
-import { buildCostRows, describeCost, formatUsd, priceChangeText } from "../src/costs.js";
+import { buildCostRows, describeCost, formatUsd, isPriceRise, priceChangeText } from "../src/costs.js";
 import type { Finding } from "../src/detect.js";
 import { estimateImpact, guessPlatform, tokensOf, usageFromLog } from "../src/impact.js";
-import { buildReport, formatText } from "../src/report.js";
+import { buildReport, formatText, refreshReport } from "../src/report.js";
 
 const TODAY = "2026-11-23";
 
@@ -239,5 +239,33 @@ describe("monthly impact", () => {
     expect(s.rows[0]?.monthlyNow).toBeCloseTo(293.75);
     // Rerouted on 1 Dec and billed at gemini-3.8-flash's rates.
     expect(s.rows[0]?.changes.map((c) => Math.round(c.monthlyAfter ?? -1))).toEqual([131, 263]);
+  });
+});
+
+describe("refreshing a stored report", () => {
+  it("re-reads retirement, reroute and price data from the catalog and recounts the days", () => {
+    // A report stored before the catalog knew gemini-2.5-pro reroutes: no date, no reroute, no prices.
+    const stale = buildReport(
+      { root: "/tmp/x", filesScanned: 1, aiFiles: 1, callSites: 1, findings: [finding("a.py", 3, "gemini-2.5-pro", "google")], tokenTips: [] },
+      "demo",
+      TODAY,
+    );
+    const stored = { ...stale, models: stale.models.map(({ id, provider, platform, fineTuned, gateways, otherPlatforms, locations }) => ({ id, provider, platform, status: "no-known-retirement" as const, fineTuned, gateways, otherPlatforms, locations })), costs: [] };
+    const fresh = refreshReport(stored, "2026-12-15");
+    expect(fresh.models[0]).toMatchObject({ status: "rerouted", date: "2026-12-01", daysLeft: -14, reroutesTo: "gemini-3.8-flash", price: { input: 0.75, output: 3.75 }, locations: ["a.py:3"] });
+    expect(fresh.costs?.map((c) => c.kind)).toEqual(["reroute-billing", "intro-ends"]);
+    expect(fresh.today).toBe("2026-12-15");
+  });
+});
+
+describe("isPriceRise", () => {
+  it("is true only when the bill goes up or the new price is unknown", () => {
+    const before = { input: 1, output: 2 };
+    expect(isPriceRise({ before, after: { input: 2, output: 4 } })).toBe(true);
+    expect(isPriceRise({ before, after: { input: 1, output: 3 } })).toBe(true);
+    expect(isPriceRise({ before })).toBe(true);
+    expect(isPriceRise({ before, after: { input: 0.5, output: 2 } })).toBe(false);
+    expect(isPriceRise({ before, after: { input: 1, output: 2 } })).toBe(false);
+    expect(isPriceRise({ before, after: { input: 2, output: 1 } })).toBe(false);
   });
 });

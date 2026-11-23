@@ -118,6 +118,54 @@ export function costRowsFor(models: ModelRow[], today: string): CostRow[] {
   );
 }
 
+/**
+ * A stored report brought up to date: retirement, reroute and price data re-read from the current catalog
+ * and every day count measured from `today`. Model IDs and locations stay as scanned.
+ */
+export function refreshReport(report: Report, today: string): Report {
+  const models = report.models.map((row): ModelRow => {
+    const entries = lookupModel(row.id);
+    const primary = entries.find((e) => e.platform === row.platform);
+    const fresh: ModelRow = {
+      id: row.id,
+      provider: row.provider,
+      platform: row.platform,
+      ...statusFor(primary, today),
+      fineTuned: row.fineTuned,
+      gateways: row.gateways,
+      otherPlatforms: entries.filter((e) => e !== primary).map((e) => ({ platform: e.platform, date: e.retiresOn })),
+      locations: row.locations,
+    };
+    if (primary) {
+      fresh.verified = primary.verified;
+      if (primary.reroutesTo) fresh.reroutesTo = primary.reroutesTo;
+      if (primary.replacement) fresh.replacement = primary.replacement;
+      if (primary.note) fresh.note = primary.note;
+    }
+    addPrices(fresh, today);
+    return fresh;
+  });
+  return {
+    ...report,
+    today,
+    models,
+    apis: report.apis.map((a) => ({ ...a, daysLeft: daysBetween(today, a.date) })),
+    costs: costRowsFor(models, today),
+  };
+}
+
+/** What a call is billed at today (announced changes and reroutes included), and the replacement's price. */
+function addPrices(row: ModelRow, today: string): void {
+  const price = billedPriceOn(row.id, row.platform, today);
+  if (price) row.price = price;
+  const replacementPrice = row.replacement ? billedPriceOn(row.replacement, row.platform, today) : undefined;
+  if (row.replacement && replacementPrice) {
+    row.replacementPrice = replacementPrice;
+    const ratio = tokenRatio({ id: row.id, platform: row.platform }, { id: row.replacement, platform: row.platform });
+    if (ratio !== 1) row.replacementTokenRatio = ratio;
+  }
+}
+
 export function buildReport(result: ScanResult, target: string, today: string): Report {
   const rows = new Map<string, ModelRow>();
   const dynamic: Report["dynamic"] = [];
@@ -157,15 +205,7 @@ export function buildReport(result: ScanResult, target: string, today: string): 
           if (primary.replacement) row.replacement = primary.replacement;
           if (primary.note) row.note = primary.note;
         }
-        // What a call is billed at today: announced changes and reroutes included.
-        const price = billedPriceOn(hit.id, platform, today);
-        if (price) row.price = price;
-        const replacementPrice = row.replacement ? billedPriceOn(row.replacement, platform, today) : undefined;
-        if (row.replacement && replacementPrice) {
-          row.replacementPrice = replacementPrice;
-          const ratio = tokenRatio({ id: hit.id, platform }, { id: row.replacement, platform });
-          if (ratio !== 1) row.replacementTokenRatio = ratio;
-        }
+        addPrices(row, today);
         rows.set(key, row);
       }
       if (hit.fineTuned) row.fineTuned = true;

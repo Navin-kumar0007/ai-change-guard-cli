@@ -2031,6 +2031,13 @@ function priceChangeText(before, after) {
   const sign = (n) => n > 0 ? `+${n}%` : `${n}%`;
   return i === o ? sign(i) : `input ${sign(i)}, output ${sign(o)}`;
 }
+function isPriceRise(row) {
+  if (!row.after)
+    return true;
+  const up = row.after.input > row.before.input || row.after.output > row.before.output;
+  const down = row.after.input < row.before.input || row.after.output < row.before.output;
+  return up && !down;
+}
 function describeCost(row) {
   const subject = row.billedAs && row.kind !== "reroute-billing" ? `${row.id} (served as ${row.billedAs})` : row.id;
   const when = row.daysLeft > 0 ? `on ${row.on} (in ${row.daysLeft} day${row.daysLeft === 1 ? "" : "s"})` : `since ${row.on}`;
@@ -2041,8 +2048,7 @@ function describeCost(row) {
     const what = row.kind === "intro-ends" ? `introductory price ${row.daysLeft > 0 ? "ends" : "ended"}` : `price ${row.daysLeft > 0 ? "changes" : "changed"}`;
     return `${subject}: ${what} ${when}; the new price is not published yet (${row.daysLeft > 0 ? "now" : "was"} ${formatPrice(row.before)})`;
   }
-  const up = row.after.input >= row.before.input && row.after.output >= row.before.output;
-  return `${subject}: price ${up ? "rises" : "changes"} ${when}: ${formatPriceMove(row.before, row.after)} (${priceChangeText(row.before, row.after)})`;
+  return `${subject}: price ${isPriceRise(row) ? "rises" : "changes"} ${when}: ${formatPriceMove(row.before, row.after)} (${priceChangeText(row.before, row.after)})`;
 }
 
 // packages/scanner/dist/report.js
@@ -2069,6 +2075,18 @@ function costRowsFor(models2, today) {
     locations: m.locations,
     ...m.reroutesTo && m.date ? { reroute: { on: m.date, to: m.reroutesTo } } : {}
   })), today);
+}
+function addPrices(row, today) {
+  const price = billedPriceOn(row.id, row.platform, today);
+  if (price)
+    row.price = price;
+  const replacementPrice = row.replacement ? billedPriceOn(row.replacement, row.platform, today) : void 0;
+  if (row.replacement && replacementPrice) {
+    row.replacementPrice = replacementPrice;
+    const ratio = tokenRatio({ id: row.id, platform: row.platform }, { id: row.replacement, platform: row.platform });
+    if (ratio !== 1)
+      row.replacementTokenRatio = ratio;
+  }
 }
 function buildReport(result, target, today) {
   const rows = /* @__PURE__ */ new Map();
@@ -2109,16 +2127,7 @@ function buildReport(result, target, today) {
           if (primary.note)
             row.note = primary.note;
         }
-        const price = billedPriceOn(hit.id, platform, today);
-        if (price)
-          row.price = price;
-        const replacementPrice = row.replacement ? billedPriceOn(row.replacement, platform, today) : void 0;
-        if (row.replacement && replacementPrice) {
-          row.replacementPrice = replacementPrice;
-          const ratio = tokenRatio({ id: hit.id, platform }, { id: row.replacement, platform });
-          if (ratio !== 1)
-            row.replacementTokenRatio = ratio;
-        }
+        addPrices(row, today);
         rows.set(key, row);
       }
       if (hit.fineTuned)
