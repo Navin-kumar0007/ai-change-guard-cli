@@ -18,3 +18,5 @@ export { aiPackagesOf, checkPackagesOffline, checkPackagesOnline, describePackag
 export type { AiPackage, OnlineOptions, PackageIssue, PackageRow } from "./packages.js";
 export { isDependencyFile, isLockfile, parseDependencies } from "./deps.js";
 export type { Dependency, Ecosystem } from "./deps.js";
+export { baselineModelId, buildLock, compareLock, formatLockChanges, groupLockChanges, LOCK_FILE, LockError, LOCKFILE_VERSION, parseBaselineSummary, parseLock, serializeLock } from "./lock.js";
+export type { AiStackLock, LockChange, LockChangeKind, LockedApi, LockedBaseline, LockedModel, LockedPackage } from "./lock.js";

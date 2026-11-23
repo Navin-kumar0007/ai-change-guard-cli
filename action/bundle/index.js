@@ -1894,6 +1894,182 @@ var PACKAGE_FIX = {
   "new-package": "Confirm the package's source repository and owner before installing; prefer the provider's official SDK."
 };
 
+// packages/scanner/dist/lock.js
+var LOCK_FILE = "ai-stack.lock";
+var LOCKFILE_VERSION = 1;
+function parseBaselineSummary(file, content) {
+  try {
+    const data = JSON.parse(content);
+    if (typeof data.version !== "number" || typeof data.model !== "string" || typeof data.createdAt !== "string" || !Array.isArray(data.items))
+      return void 0;
+    return { file, model: data.model, createdAt: data.createdAt, prompts: data.items.length };
+  } catch {
+    return void 0;
+  }
+}
+var fileOf = (location) => location.replace(/:\d+$/, "");
+var codePoint = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+var filesOf = (locations) => [...new Set(locations.map(fileOf))].sort(codePoint);
+var byText = (key) => (a, b) => codePoint(key(a), key(b));
+function baselineModelId(ref) {
+  const model = ref.slice(ref.indexOf(":") + 1);
+  return classifyModelId(model)?.id ?? model.toLowerCase();
+}
+function buildLock(report, baselines = []) {
+  const models2 = report.models.map((m) => {
+    const listed2 = lookupPrice(m.id, m.platform);
+    const changes = [...new Set(lookupPriceChanges(m.id, m.platform).map((c) => c.on))].sort(codePoint);
+    return {
+      id: m.id,
+      platform: m.platform,
+      files: filesOf(m.locations),
+      ...m.date ? { retiresOn: m.date } : {},
+      ...m.reroutesTo ? { reroutesTo: m.reroutesTo } : {},
+      ...m.replacement ? { replacement: m.replacement } : {},
+      ...listed2 ? { price: { input: listed2.input, output: listed2.output } } : {},
+      ...changes.length ? { priceChanges: changes } : {}
+    };
+  }).sort(byText((m) => `${m.id}|${m.platform}`));
+  return {
+    lockfileVersion: LOCKFILE_VERSION,
+    models: models2,
+    apis: report.apis.map((a) => ({ id: a.id, name: a.name, retiresOn: a.date, files: filesOf(a.locations) })).sort(byText((a) => a.id)),
+    packages: (report.aiPackages ?? []).map((p) => ({ ecosystem: p.ecosystem, name: p.name, versions: [...p.versions].sort(codePoint), files: filesOf(p.locations) })).sort(byText((p) => `${p.ecosystem}|${p.name}`)),
+    baselines: [...baselines].sort(byText((b) => b.file))
+  };
+}
+var LockError = class extends Error {
+};
+var REWRITE = "Write it again with: ai-change-guard lock";
+var isStr = (v) => typeof v === "string";
+var isStrArray = (v) => Array.isArray(v) && v.every(isStr);
+var isObj = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function parseLock(text) {
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new LockError(`${LOCK_FILE} is not valid JSON. ${REWRITE}`);
+  }
+  if (!isObj(data))
+    throw new LockError(`${LOCK_FILE} is not a lock file. ${REWRITE}`);
+  if (data.lockfileVersion !== LOCKFILE_VERSION) {
+    throw new LockError(`${LOCK_FILE} has lockfileVersion ${String(data.lockfileVersion)}; this version reads ${LOCKFILE_VERSION}. ${REWRITE}`);
+  }
+  const list = (key, valid) => {
+    const value = data[key] ?? [];
+    if (!Array.isArray(value) || !value.every((e) => isObj(e) && valid(e)))
+      throw new LockError(`${LOCK_FILE}: "${key}" is damaged (maybe a merge). ${REWRITE}`);
+    return value;
+  };
+  const price = (v) => v === void 0 || isObj(v) && typeof v.input === "number" && typeof v.output === "number";
+  return {
+    lockfileVersion: LOCKFILE_VERSION,
+    models: list("models", (e) => isStr(e.id) && isStr(e.platform) && isStrArray(e.files) && price(e.price) && (e.priceChanges === void 0 || isStrArray(e.priceChanges))),
+    apis: list("apis", (e) => isStr(e.id) && isStr(e.name) && isStr(e.retiresOn) && isStrArray(e.files)),
+    packages: list("packages", (e) => isStr(e.ecosystem) && isStr(e.name) && isStrArray(e.versions) && isStrArray(e.files)),
+    baselines: list("baselines", (e) => isStr(e.file) && isStr(e.model) && isStr(e.createdAt) && typeof e.prompts === "number")
+  };
+}
+var same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+var modelKey = (m) => `${m.id}|${m.platform}`;
+var money = (p) => p ? `$${p.input} / $${p.output}` : "no list price";
+function compareLock(locked, current) {
+  const changes = [];
+  const outdated = (subject, detail) => changes.push({ kind: "outdated", subject, detail });
+  const catalog = (subject, detail) => changes.push({ kind: "catalog", subject, detail });
+  const unverified = (subject, detail) => changes.push({ kind: "unverified", subject, detail });
+  const before = new Map(locked.models.map((m) => [modelKey(m), m]));
+  const now = new Map(current.models.map((m) => [modelKey(m), m]));
+  for (const [key, m] of now) {
+    const subject = `model ${m.id} (${m.platform})`;
+    const old = before.get(key);
+    if (!old) {
+      outdated(subject, `new in the code (${m.files.join(", ")})`);
+      continue;
+    }
+    if (!same(old.retiresOn, m.retiresOn) || !same(old.reroutesTo, m.reroutesTo)) {
+      const was = old.retiresOn ? `${old.reroutesTo ? `reroute to ${old.reroutesTo}` : "retirement"} on ${old.retiresOn}` : "no retirement announced";
+      const is = m.retiresOn ? `${m.reroutesTo ? `reroutes to ${m.reroutesTo}` : "retires"} on ${m.retiresOn}` : "no retirement announced";
+      catalog(subject, `${was} when locked; now ${is}`);
+    }
+    if (!same(old.replacement, m.replacement))
+      catalog(subject, `replacement ${old.replacement ?? "none"} when locked; now ${m.replacement ?? "none"}`);
+    if (!same(old.price, m.price))
+      catalog(subject, `list price ${money(old.price)} when locked; now ${money(m.price)}`);
+    if (!same(old.priceChanges, m.priceChanges)) {
+      const added = (m.priceChanges ?? []).filter((d) => !(old.priceChanges ?? []).includes(d));
+      if (added.length)
+        catalog(subject, `price change announced for ${added.join(", ")}`);
+    }
+    if (!same(old.files, m.files))
+      outdated(subject, `now used in ${m.files.join(", ")}`);
+  }
+  for (const [key, m] of before)
+    if (!now.has(key))
+      outdated(`model ${m.id} (${m.platform})`, "no longer in the code");
+  const apisBefore = new Map(locked.apis.map((a) => [a.id, a]));
+  const apisNow = new Map(current.apis.map((a) => [a.id, a]));
+  for (const [id, a] of apisNow) {
+    const old = apisBefore.get(id);
+    if (!old)
+      outdated(`AI API ${a.name}`, `deprecated API newly used (${a.files.join(", ")}), shuts down ${a.retiresOn}`);
+    else {
+      if (old.retiresOn !== a.retiresOn || old.name !== a.name)
+        catalog(`AI API ${a.name}`, `shutdown ${old.retiresOn} when locked; now ${a.retiresOn}`);
+      if (!same(old.files, a.files))
+        outdated(`AI API ${a.name}`, `now used in ${a.files.join(", ")}`);
+    }
+  }
+  for (const [id, a] of apisBefore)
+    if (!apisNow.has(id))
+      outdated(`AI API ${a.name}`, "no longer in the code");
+  const pkgKey = (p) => `${p.ecosystem}|${p.name}`;
+  const pkgsBefore = new Map(locked.packages.map((p) => [pkgKey(p), p]));
+  const pkgsNow = new Map(current.packages.map((p) => [pkgKey(p), p]));
+  for (const [key, p] of pkgsNow) {
+    const old = pkgsBefore.get(key);
+    const subject = `package ${p.name} (${p.ecosystem})`;
+    if (!old)
+      outdated(subject, `new${p.versions.length ? ` at ${p.versions.join(", ")}` : ""}`);
+    else {
+      if (!same(old.versions, p.versions))
+        outdated(subject, `${old.versions.join(", ") || "unpinned"} when locked; now ${p.versions.join(", ") || "unpinned"}`);
+      if (!same(old.files, p.files))
+        outdated(subject, `now declared in ${p.files.join(", ")}`);
+    }
+  }
+  for (const [key, p] of pkgsBefore)
+    if (!pkgsNow.has(key))
+      outdated(`package ${p.name} (${p.ecosystem})`, "no longer installed");
+  const baselinesNow = new Map(current.baselines.map((b) => [b.file, b]));
+  for (const b of locked.baselines) {
+    const nowB = baselinesNow.get(b.file);
+    if (!nowB)
+      outdated(`baseline ${b.file}`, "removed");
+    else if (nowB.model !== b.model || nowB.createdAt !== b.createdAt || nowB.prompts !== b.prompts) {
+      outdated(`baseline ${b.file}`, `now verifies ${nowB.model} on ${nowB.prompts} prompts (made ${nowB.createdAt})`);
+    }
+  }
+  for (const b of current.baselines)
+    if (!locked.baselines.some((x) => x.file === b.file))
+      outdated(`baseline ${b.file}`, `new: verifies ${b.model}`);
+  const usedIds = new Set(current.models.map((m) => m.id));
+  for (const b of current.baselines) {
+    if (!usedIds.has(baselineModelId(b.model)))
+      unverified(`baseline ${b.file}`, `verifies ${b.model}, which the code no longer uses`);
+  }
+  return changes;
+}
+function groupLockChanges(changes) {
+  const groups = [
+    { kind: "catalog", heading: "changed in the catalog since the lock was written", remedy: "check these, then run ai-change-guard lock and commit" },
+    { kind: "outdated", heading: "out of date with the code", remedy: "run ai-change-guard lock and commit it, so the pull request shows the AI stack change" },
+    { kind: "unverified", heading: "model switched without a new baseline", remedy: "make a new baseline for the model in use with ai-change-guard baseline" }
+  ];
+  return groups.map((g) => ({ ...g, changes: changes.filter((c) => c.kind === g.kind) })).filter((g) => g.changes.length > 0);
+}
+
 // packages/scanner/dist/security.js
 import { basename as basename3 } from "node:path";
 
@@ -2523,7 +2699,7 @@ async function scanDirectory(root) {
   if (!info?.isDirectory())
     throw new Error(`Not a folder: ${root}`);
   const rules = compileApiRules(apis);
-  const result = { root, filesScanned: 0, aiFiles: 0, callSites: 0, findings: [], tokenTips: [], security: [], dependencies: [] };
+  const result = { root, filesScanned: 0, aiFiles: 0, callSites: 0, findings: [], tokenTips: [], security: [], dependencies: [], baselines: [] };
   const ownPackages = /* @__PURE__ */ new Set();
   for await (const file of walk(root)) {
     const size = (await stat(file.path)).size;
@@ -2532,6 +2708,13 @@ async function scanDirectory(root) {
     const content = await readFile2(file.path, "utf8");
     if (content.includes("\0"))
       continue;
+    if (file.rel.endsWith(".baseline.json")) {
+      const baseline = parseBaselineSummary(file.rel, content);
+      if (baseline) {
+        result.baselines.push(baseline);
+        continue;
+      }
+    }
     const own = ownPackageName(file.rel, content);
     if (own)
       ownPackages.add(own);
@@ -2555,6 +2738,9 @@ async function scanDirectory(root) {
   }
   result.dependencies = result.dependencies.filter((d) => !(d.ecosystem === "npm" && ownPackages.has(d.name)));
   const npmrc = await readFile2(join2(root, ".npmrc"), "utf8").catch(() => "");
+  const lockText = await readFile2(join2(root, LOCK_FILE), "utf8").catch(() => void 0);
+  if (lockText !== void 0)
+    result.lockText = lockText;
   const registries = privateRegistries(npmrc);
   for (const d of result.dependencies) {
     if (d.ecosystem === "npm" && (registries.all || registries.scopes.some((s) => d.name.startsWith(`${s}/`))))
@@ -2664,6 +2850,16 @@ function describeCost(row) {
 }
 
 // packages/scanner/dist/report.js
+function lockStatus(lockText, report) {
+  if (lockText === void 0)
+    return void 0;
+  try {
+    const file = parseLock(lockText);
+    return { file, changes: compareLock(file, buildLock(report, report.baselines ?? [])) };
+  } catch (error) {
+    return { error: error instanceof LockError ? error.message : String(error) };
+  }
+}
 var SEVERITY_ORDER = { high: 0, medium: 1, review: 2 };
 var STATUS_ORDER = {
   retired: 0,
@@ -2790,7 +2986,7 @@ function buildReport(result, target, today) {
   const security = [...securityRows.values()].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || b.findings.length - a.findings.length);
   const costs = costRowsFor(models2, today);
   const aiPackages = aiPackagesOf(result.dependencies ?? []);
-  return {
+  const report = {
     target,
     today,
     filesScanned: result.filesScanned,
@@ -2803,8 +2999,11 @@ function buildReport(result, target, today) {
     security,
     costs,
     aiPackages,
-    packages: sortPackageRows(checkPackagesOffline(aiPackages))
+    packages: sortPackageRows(checkPackagesOffline(aiPackages)),
+    baselines: result.baselines ?? []
   };
+  const lock = lockStatus(result.lockText, report);
+  return lock ? { ...report, lock } : report;
 }
 async function addOnlinePackageChecks(report, options) {
   const { rows, failed } = await checkPackagesOnline(report.aiPackages ?? [], options);
@@ -2890,6 +3089,16 @@ function buildCheck(report, changedFiles) {
     lines.push("", "**AI packages to review** (advisory):");
     for (const p of otherPackages)
       lines.push(`- ${describePackage(p)}`);
+  }
+  if (report.lock) {
+    if ("error" in report.lock)
+      lines.push("", `**ai-stack.lock:** ${report.lock.error}`);
+    else if (report.lock.changes.length > 0) {
+      for (const g of groupLockChanges(report.lock.changes)) {
+        lines.push("", `**\`${LOCK_FILE}\`: ${g.heading}.** To fix: ${g.remedy}.`, ...g.changes.map((c) => `- ${c.subject}: ${c.detail}`));
+      }
+    } else
+      lines.push("", `\`${LOCK_FILE}\` is up to date.`);
   }
   if (report.tokenTips.length > 0) {
     lines.push("", "**Token Saver:** " + report.tokenTips.map((t) => `${t.title} (${t.locations.length})`).join(" \xB7 "));
@@ -3228,6 +3437,11 @@ function oneOf(value, name, allowed) {
   if (!allowed.includes(value)) throw new Error(`Input "${name}" must be one of: ${allowed.join(", ")}.`);
   return value;
 }
+function lockFails(report, failOn) {
+  if (failOn === "none" || !report.lock) return false;
+  if ("error" in report.lock) return true;
+  return report.lock.changes.some((c) => failOn === "any" || c.kind === failOn);
+}
 function scanFails(report, failOn) {
   if (failOn === "none") return false;
   if (report.packages?.some((p) => p.issue === "compromised")) return true;
@@ -3257,6 +3471,7 @@ async function run({ env, today, log, client, github }) {
     else log(markdown);
   };
   const failOn = oneOf(input("fail-on", env) || "retired", "fail-on", ["retired", "retiring", "none"]);
+  const lockFailOn = oneOf(input("lock-fail-on", env) || "none", "lock-fail-on", ["none", "any", "outdated", "catalog", "unverified"]);
   const openPr = oneOf(input("open-pr", env) || "false", "open-pr", ["true", "false"]) === "true";
   const scanRoot = resolve(workspace, input("path", env) || ".");
   const scan = await scanDirectory(scanRoot);
@@ -3268,7 +3483,7 @@ async function run({ env, today, log, client, github }) {
   await summary(`## AI Change Guard: ${check.title}
 
 ${check.summary}`);
-  let failed = scanFails(report, failOn);
+  let failed = scanFails(report, failOn) || lockFails(report, lockFailOn);
   log(failed ? `::error::AI Change Guard: ${check.title}` : `AI Change Guard: ${check.title}`);
   const prompts = input("prompts", env);
   const oldModel = input("old-model", env);
@@ -3429,6 +3644,7 @@ if (process.env.GITHUB_ACTIONS === "true") {
 }
 export {
   input,
+  lockFails,
   run,
   scanFails,
   switchIds

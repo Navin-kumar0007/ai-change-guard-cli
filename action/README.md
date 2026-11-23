@@ -133,6 +133,7 @@ How it behaves:
 | `find-savings` | `false` | `true` runs Money-Finder on `old-model`: replays `prompts` on cheaper models of the same provider and writes the savings card to the Summary. With `open-pr: true`, opens the switch pull request to the cheaper model that passed |
 | `candidates` | | Models for `find-savings`, comma-separated `provider:model` (default: the 2 nearest cheaper ones in the catalog) |
 | `calls-per-month` | | Your monthly calls to `old-model`, for the monthly saving in the savings card |
+| `lock-fail-on` | `none` | With an `ai-stack.lock` in the repository: fail when it differs from the code or the catalog (`any`), only from the code (`outdated`), only from the catalog (`catalog`), only a model switched without a new baseline (`unverified`) |
 | `online-package-check` | `false` | `true` also checks AI packages online: OSV malicious-code advisories, and npm / PyPI for AI-sounding names that don't exist or are brand new. Sends package names and versions, never code |
 | `prompts` | | Golden set (JSONL) for a replay |
 | `old-model`, `new-model` | | `provider:model` |

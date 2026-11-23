@@ -36,6 +36,7 @@ import {
   runReplayJob,
 } from "@ai-change-guard/replay";
 import { addOnlinePackageChecks, buildReport, formatText, localToday } from "./report.js";
+import { buildLock, formatLockChanges, LOCK_FILE, serializeLock } from "./lock.js";
 import { describeCost, formatUsd } from "./costs.js";
 import { estimateImpact, logDays, usageFromLog, type ImpactSummary, type ModelUsage } from "./impact.js";
 import { findPrompts } from "./prompts.js";
@@ -55,6 +56,7 @@ const USAGE = `Usage:
   ai-change-guard baseline --set golden.jsonl --model provider:model --out golden.baseline.json [--runs N]
   ai-change-guard watch --set golden.jsonl --baseline golden.baseline.json [--runs N] [--slack-webhook-env NAME]
   ai-change-guard fallback --set golden.jsonl --model provider:model --candidates a,b,c [--format litellm|openrouter] [--out FILE]
+  ai-change-guard lock [folder] [--check]
   ai-change-guard save --set golden.jsonl --model provider:model [--calls-per-month N | --log ai-calls.jsonl] [--candidates a,b]
   ai-change-guard cost [folder] --log ai-calls.jsonl [--sample 0.2] | --calls N --input-tokens N --output-tokens N [--model ID]
 
@@ -101,6 +103,11 @@ Fallback (tested backup models for an outage):
   --candidates LIST           provider:model,... to test against your --model on the golden set
   --format litellm|openrouter Config to write (default litellm); only candidates with nothing broken go in
   --runs N                    Runs per prompt (default 3)
+
+Lock options (ai-stack.lock: every model, AI API, AI package and baseline your app depends on):
+  lock                        Writes ai-stack.lock in the folder; commit it so reviewers see AI stack changes
+  --check                     Compares it with the code and today's catalog instead: exit code 1 when the code
+                              changed without the lock, or the catalog changed (a retirement, reroute or price)
 
 Save options (Money-Finder: a cheaper model that answers your prompts the same way):
   --model provider:model      The model you use now
@@ -521,6 +528,39 @@ export function formatImpact(summary: ImpactSummary): string {
   return out.join("\n");
 }
 
+async function lockCommand(args: string[]): Promise<number> {
+  const folder = args[0] && !args[0].startsWith("-") ? args[0] : ".";
+  const f = parseFlags(args[0] && !args[0].startsWith("-") ? args.slice(1) : args, { "--check": "bool", "--today": "value" });
+  const today = str(f, "--today") ?? localToday();
+  if (!DATE_RE.test(today)) throw new UsageError("--today must look like 2026-11-17");
+  const root = resolve(folder);
+  const scanned = await scanDirectory(root);
+  if (!f["--check"]) {
+    // Writing: the old lock is replaced, so it is not read or compared.
+    delete scanned.lockText;
+    const lock = buildLock(buildReport(scanned, folder, today), scanned.baselines ?? []);
+    await writeFile(join(root, LOCK_FILE), serializeLock(lock));
+    console.log(
+      `Wrote ${join(folder, LOCK_FILE)}: ${lock.models.length} model${lock.models.length === 1 ? "" : "s"}, ${lock.apis.length} AI API${lock.apis.length === 1 ? "" : "s"}, ` +
+        `${lock.packages.length} AI package${lock.packages.length === 1 ? "" : "s"}, ${lock.baselines.length} baseline${lock.baselines.length === 1 ? "" : "s"}. Commit it.`,
+    );
+    return 0;
+  }
+  const report = buildReport(scanned, folder, today);
+  {
+    if (!report.lock) {
+      console.log(`No ${LOCK_FILE} in ${folder}. Write one with: ai-change-guard lock ${folder === "." ? "" : folder}`.trim());
+      return 1;
+    }
+    if ("error" in report.lock) {
+      console.log(report.lock.error);
+      return 1;
+    }
+    console.log(formatLockChanges(report.lock.changes).join("\n"));
+    return report.lock.changes.length > 0 ? 1 : 0;
+  }
+}
+
 async function saveCommand(args: string[]): Promise<number> {
   const f = parseFlags(args, {
     "--model": "value",
@@ -691,6 +731,7 @@ async function main(argv: string[]): Promise<number> {
   if (command === "fallback") return fallbackCommand(rest);
   if (command === "cost") return costCommand(rest);
   if (command === "save") return saveCommand(rest);
+  if (command === "lock") return lockCommand(rest);
   if (command !== "scan") throw new UsageError(command ? `Unknown command: ${command}` : "Missing command.");
 
   const options = parseArgs(rest);

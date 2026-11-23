@@ -1,5 +1,6 @@
 import { describeCost } from "./costs.js";
 import { describePackage, PACKAGE_FIX } from "./packages.js";
+import { groupLockChanges, LOCK_FILE } from "./lock.js";
 import type { ModelRow, Report } from "./report.js";
 
 export type Conclusion = "success" | "neutral" | "failure";
@@ -93,6 +94,14 @@ export function buildCheck(report: Report, changedFiles: string[] | null): Check
   if (otherPackages.length > 0) {
     lines.push("", "**AI packages to review** (advisory):");
     for (const p of otherPackages) lines.push(`- ${describePackage(p)}`);
+  }
+  if (report.lock) {
+    if ("error" in report.lock) lines.push("", `**ai-stack.lock:** ${report.lock.error}`);
+    else if (report.lock.changes.length > 0) {
+      for (const g of groupLockChanges(report.lock.changes)) {
+        lines.push("", `**\`${LOCK_FILE}\`: ${g.heading}.** To fix: ${g.remedy}.`, ...g.changes.map((c) => `- ${c.subject}: ${c.detail}`));
+      }
+    } else lines.push("", `\`${LOCK_FILE}\` is up to date.`);
   }
   if (report.tokenTips.length > 0) {
     lines.push("", "**Token Saver:** " + report.tokenTips.map((t) => `${t.title} (${t.locations.length})`).join(" · "));

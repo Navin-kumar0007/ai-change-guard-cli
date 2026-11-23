@@ -39,6 +39,13 @@ function oneOf(value: string, name: string, allowed: string[]): string {
   return value;
 }
 
+/** Whether ai-stack.lock differences fail the step: any, only code changes (outdated), only catalog changes, or none. */
+export function lockFails(report: Report, failOn: string): boolean {
+  if (failOn === "none" || !report.lock) return false;
+  if ("error" in report.lock) return true;
+  return report.lock.changes.some((c) => failOn === "any" || c.kind === failOn);
+}
+
 export function scanFails(report: Report, failOn: string): boolean {
   if (failOn === "none") return false;
   // A malicious AI package release fails the step at every level except "none".
@@ -86,6 +93,7 @@ export async function run({ env, today, log, client, github }: RunDeps): Promise
   };
 
   const failOn = oneOf(input("fail-on", env) || "retired", "fail-on", ["retired", "retiring", "none"]);
+  const lockFailOn = oneOf(input("lock-fail-on", env) || "none", "lock-fail-on", ["none", "any", "outdated", "catalog", "unverified"]);
   const openPr = oneOf(input("open-pr", env) || "false", "open-pr", ["true", "false"]) === "true";
   const scanRoot = resolve(workspace, input("path", env) || ".");
   const scan = await scanDirectory(scanRoot);
@@ -95,7 +103,7 @@ export async function run({ env, today, log, client, github }: RunDeps): Promise
   }
   const check = buildCheck(report, null);
   await summary(`## AI Change Guard: ${check.title}\n\n${check.summary}`);
-  let failed = scanFails(report, failOn);
+  let failed = scanFails(report, failOn) || lockFails(report, lockFailOn);
   log(failed ? `::error::AI Change Guard: ${check.title}` : `AI Change Guard: ${check.title}`);
 
   const prompts = input("prompts", env);

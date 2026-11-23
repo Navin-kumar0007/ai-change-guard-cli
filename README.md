@@ -9,6 +9,7 @@ AI providers retire models on a schedule. When a model you call is retired, requ
 - **Prompt Repair:** when the new model breaks your JSON format, finds a prompt change that fixes it and proves it with a re-test.
 - **Nightly watch:** asks the model you already use again every night and compares with a committed baseline, so a silent model update or a reroute to another model reaches you as one alert (job failure, email, Slack) instead of as broken answers in production.
 - **Tested fallbacks:** `fallback` replays your golden set on backup models and writes a LiteLLM or OpenRouter fallback config with only the ones that broke nothing, so an outage switches to a model you know works.
+- **ai-stack.lock:** `lock` writes one committed file listing every model (with its retirement date, reroute and price as known that day), deprecated AI API, AI package and golden-set baseline your app depends on. `lock --check`, every scan and the pull request check compare it with the code and today's catalog. They say when the code changed without the lock, or when the catalog changed since it was written.
 - **Money-Finder:** `save` replays your golden set on the nearest cheaper models of the same provider and recommends one only if nothing broke and at most 2% of answers changed, with the saving per call and per month measured on your own prompts. The Action can open the switch pull request with the savings card.
 - **Switch:** once the replay passes, changes the model ID across your code, or opens a pull request with the replay report as proof.
 - **AI security check:** flags AI-specific mistakes with zero AI calls: AI keys in code or the browser, model output passed to eval, a shell, SQL or raw HTML, user input inside the system prompt, agent tools that delete, pay or send without a confirmation step, and unpinned MCP servers (mapped to the OWASP Top 10 for LLM and agentic apps; advisory, never a guarantee).
@@ -70,6 +71,21 @@ node packages/scanner/dist/cli.js replay --set prompts.jsonl --old openai:gpt-4o
 Every prompt gets a verdict: same, changed, broken, or could not compare, with the reason. A spend cap (`--max-calls`, default 500) stops a run before it starts if it would make too many calls. Providers: OpenAI, Anthropic, Google Gemini, Groq, OpenRouter, Mistral and Ollama.
 
 **Prompt Repair:** add `--repair`. When the new model breaks a prompt's JSON format (prose around the JSON, code fences, schema misses), AI Change Guard tries fixed, readable changes on the new model only: a JSON-only instruction in the system prompt (with your schema), then that plus the provider's JSON mode. Each try is re-tested with the same rules, and the first one that passes is shown as the exact change to make. `--repaired-set fixed.jsonl` writes your golden set with the working fixes applied, so you can re-run it. Repair calls come out of the same `--max-calls` budget; `--repaired-set` writes a new file with prompts only, without comments or extra fields.
+
+## ai-stack.lock: your AI dependencies in one file
+
+```sh
+node packages/scanner/dist/cli.js lock ./my-app           # writes my-app/ai-stack.lock; commit it
+node packages/scanner/dist/cli.js lock ./my-app --check   # exit code 1 when it no longer matches
+```
+
+The file lists each model with the files that use it, plus what the catalog said about it that day: retirement date, reroute, replacement, list price and announced price changes. It also lists deprecated AI APIs, AI packages with their versions, and the golden-set baselines (`*.baseline.json`) with the model each one verified. It records file names rather than line numbers and has no timestamp, so it only changes when the AI stack does.
+
+`--check` (and every scan, and the pull request check) reports two kinds of difference:
+
+- **Out of date with the code:** a model or AI package added, removed or changed without updating the lock. A model switched without making a new baseline also counts. Run `lock` again and commit, so the pull request shows the AI stack change.
+- **Changed in the catalog:** the code is the same, but something about a model changed. That can be a retirement announced or moved, a reroute or replacement added, or a new list price or announced price change. This is what a nightly `lock --check` catches.
+- **Model switched without a new baseline:** a golden-set baseline still verifies a model the code no longer uses. Make a new baseline for the model in use.
 
 ## Money-Finder: a cheaper model that answers the same way
 

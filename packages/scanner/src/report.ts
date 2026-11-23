@@ -12,6 +12,7 @@ import {
   type TokenPrice,
 } from "@ai-change-guard/catalog";
 import { buildCostRows, describeCost, formatPrice, type CostRow } from "./costs.js";
+import { buildLock, compareLock, formatLockChanges, LOCK_FILE, LockError, parseLock, type AiStackLock, type LockChange, type LockedBaseline } from "./lock.js";
 import { aiPackagesOf, checkPackagesOffline, checkPackagesOnline, describePackage, NEW_PACKAGE_DAYS, PACKAGE_FIX, sortPackageRows, type AiPackage, type OnlineOptions, type PackageRow } from "./packages.js";
 import type { ScanResult } from "./scan.js";
 import { SECURITY_RULES, type SecurityRule } from "./security.js";
@@ -89,6 +90,21 @@ export interface Report {
   packages?: PackageRow[];
   /** Set once the online package check ran (OSV and registries); "failed" counts lookups that did not answer. */
   packagesOnline?: { checked: true; failed: number };
+  /** Golden-set baselines in the repository (they go into ai-stack.lock). */
+  baselines?: LockedBaseline[];
+  /** The repository's ai-stack.lock and how today's scan differs from it; or why it could not be read. */
+  lock?: { file: AiStackLock; changes: LockChange[] } | { error: string };
+}
+
+/** Compares the committed lock text with what this report's lock would be. */
+function lockStatus(lockText: string | undefined, report: Report): Report["lock"] {
+  if (lockText === undefined) return undefined;
+  try {
+    const file = parseLock(lockText);
+    return { file, changes: compareLock(file, buildLock(report, report.baselines ?? [])) };
+  } catch (error) {
+    return { error: error instanceof LockError ? error.message : String(error) };
+  }
 }
 
 const SEVERITY_ORDER = { high: 0, medium: 1, review: 2 } as const;
@@ -129,6 +145,18 @@ export function costRowsFor(models: ModelRow[], today: string): CostRow[] {
  * and every day count measured from `today`. Model IDs and locations stay as scanned.
  */
 export function refreshReport(report: Report, today: string): Report {
+  const fresh = refreshCatalogData(report, today);
+  // The committed lock is compared again with today's catalog: a retirement announced since shows up.
+  if (!report.lock || !("file" in report.lock)) return fresh;
+  try {
+    return { ...fresh, lock: { file: report.lock.file, changes: compareLock(report.lock.file, buildLock(fresh, fresh.baselines ?? [])) } };
+  } catch (error) {
+    // A stored lock that no longer compares is reported, never thrown at the caller.
+    return { ...fresh, lock: { error: `${LOCK_FILE} could not be compared: ${error instanceof Error ? error.message : String(error)}` } };
+  }
+}
+
+function refreshCatalogData(report: Report, today: string): Report {
   const models = report.models.map((row): ModelRow => {
     const entries = lookupModel(row.id);
     const primary = entries.find((e) => e.platform === row.platform);
@@ -287,7 +315,7 @@ export function buildReport(result: ScanResult, target: string, today: string): 
   const costs = costRowsFor(models, today);
   const aiPackages = aiPackagesOf(result.dependencies ?? []);
 
-  return {
+  const report: Report = {
     target,
     today,
     filesScanned: result.filesScanned,
@@ -301,7 +329,10 @@ export function buildReport(result: ScanResult, target: string, today: string): 
     costs,
     aiPackages,
     packages: sortPackageRows(checkPackagesOffline(aiPackages)),
+    baselines: result.baselines ?? [],
   };
+  const lock = lockStatus(result.lockText, report);
+  return lock ? { ...report, lock } : report;
 }
 
 /** Adds the online package check (OSV advisories, registry existence and age), replacing any earlier online findings. */
@@ -435,6 +466,12 @@ export function formatText(report: Report): string {
       if (p.url) out.push(`    advisory: ${p.url}`);
     }
     if (report.packagesOnline?.failed) out.push(`  ${report.packagesOnline.failed} online lookup${report.packagesOnline.failed === 1 ? "" : "s"} did not answer; run again to check them.`);
+    out.push("");
+  }
+
+  if (report.lock) {
+    if ("error" in report.lock) out.push(`ai-stack.lock: ${report.lock.error}`);
+    else out.push(...formatLockChanges(report.lock.changes));
     out.push("");
   }
 
