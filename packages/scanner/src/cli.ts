@@ -36,7 +36,8 @@ import {
   runReplayJob,
 } from "@ai-change-guard/replay";
 import { addOnlinePackageChecks, buildReport, formatText, localToday } from "./report.js";
-import { buildLock, formatLockChanges, LOCK_FILE, serializeLock } from "./lock.js";
+import { buildLock, compareMcp, formatLockChanges, LOCK_FILE, mcpSection, parseLock, serializeLock, type AiStackLock } from "./lock.js";
+import { describeServer, listMcpTools, type McpServerConfig } from "./mcp-tools.js";
 import { describeCost, formatUsd } from "./costs.js";
 import { estimateImpact, logDays, usageFromLog, type ImpactSummary, type ModelUsage } from "./impact.js";
 import { findPrompts } from "./prompts.js";
@@ -56,7 +57,7 @@ const USAGE = `Usage:
   ai-change-guard baseline --set golden.jsonl --model provider:model --out golden.baseline.json [--runs N]
   ai-change-guard watch --set golden.jsonl --baseline golden.baseline.json [--runs N] [--slack-webhook-env NAME]
   ai-change-guard fallback --set golden.jsonl --model provider:model --candidates a,b,c [--format litellm|openrouter] [--out FILE]
-  ai-change-guard lock [folder] [--check]
+  ai-change-guard lock [folder] [--check] [--mcp]
   ai-change-guard save --set golden.jsonl --model provider:model [--calls-per-month N | --log ai-calls.jsonl] [--candidates a,b]
   ai-change-guard cost [folder] --log ai-calls.jsonl [--sample 0.2] | --calls N --input-tokens N --output-tokens N [--model ID]
 
@@ -108,6 +109,8 @@ Lock options (ai-stack.lock: every model, AI API, AI package and baseline your a
   lock                        Writes ai-stack.lock in the folder; commit it so reviewers see AI stack changes
   --check                     Compares it with the code and today's catalog instead: exit code 1 when the code
                               changed without the lock, or the catalog changed (a retirement, reroute or price)
+  --mcp                       Also starts the MCP servers in your MCP config (it RUNS their commands, on this
+                              machine) and records or compares their tools: names, descriptions and inputs
 
 Save options (Money-Finder: a cheaper model that answers your prompts the same way):
   --model provider:model      The model you use now
@@ -530,20 +533,31 @@ export function formatImpact(summary: ImpactSummary): string {
 
 async function lockCommand(args: string[]): Promise<number> {
   const folder = args[0] && !args[0].startsWith("-") ? args[0] : ".";
-  const f = parseFlags(args[0] && !args[0].startsWith("-") ? args.slice(1) : args, { "--check": "bool", "--today": "value" });
+  const f = parseFlags(args[0] && !args[0].startsWith("-") ? args.slice(1) : args, { "--check": "bool", "--mcp": "bool", "--today": "value" });
   const today = str(f, "--today") ?? localToday();
   if (!DATE_RE.test(today)) throw new UsageError("--today must look like 2026-11-17");
   const root = resolve(folder);
   const scanned = await scanDirectory(root);
+  const oldText = scanned.lockText;
+  let old: AiStackLock | undefined;
+  try {
+    old = oldText === undefined ? undefined : parseLock(oldText);
+  } catch {
+    old = undefined;
+  }
+  const listed = f["--mcp"] ? await listServers(scanned.mcpServers ?? [], root) : undefined;
   if (!f["--check"]) {
-    // Writing: the old lock is replaced, so it is not read or compared.
+    // Writing: the old lock is replaced, so it is not compared. Without --mcp its MCP section is kept as it was.
     delete scanned.lockText;
-    const lock = buildLock(buildReport(scanned, folder, today), scanned.baselines ?? []);
+    const mcp = listed ? mcpSection(listed, old?.mcp) : old?.mcp;
+    const lock = buildLock(buildReport(scanned, folder, today), scanned.baselines ?? [], mcp);
     await writeFile(join(root, LOCK_FILE), serializeLock(lock));
     console.log(
       `Wrote ${join(folder, LOCK_FILE)}: ${lock.models.length} model${lock.models.length === 1 ? "" : "s"}, ${lock.apis.length} AI API${lock.apis.length === 1 ? "" : "s"}, ` +
-        `${lock.packages.length} AI package${lock.packages.length === 1 ? "" : "s"}, ${lock.baselines.length} baseline${lock.baselines.length === 1 ? "" : "s"}. Commit it.`,
+        `${lock.packages.length} AI package${lock.packages.length === 1 ? "" : "s"}, ${lock.baselines.length} baseline${lock.baselines.length === 1 ? "" : "s"}` +
+        `${lock.mcp ? `, ${lock.mcp.length} MCP server${lock.mcp.length === 1 ? "" : "s"}` : ""}. Commit it.`,
     );
+    for (const s of listed ?? []) if (s.error) console.error(`Could not list the tools of ${s.name} (${s.file}): ${s.error}${old?.mcp?.some((o) => o.name === s.name && o.file === s.file) ? "; kept its tools from the old lock" : ""}`);
     return 0;
   }
   const report = buildReport(scanned, folder, today);
@@ -556,9 +570,26 @@ async function lockCommand(args: string[]): Promise<number> {
       console.log(report.lock.error);
       return 1;
     }
-    console.log(formatLockChanges(report.lock.changes).join("\n"));
-    return report.lock.changes.length > 0 ? 1 : 0;
+    const changes = [...report.lock.changes, ...(listed ? compareMcp(report.lock.file.mcp, listed) : [])];
+    const lockedMcp = report.lock.file.mcp ?? [];
+    for (const s of listed ?? []) {
+      if (s.error && !lockedMcp.some((o) => o.name === s.name && o.file === s.file)) console.error(`Could not list the tools of ${s.name} (${s.file}), which is not in the lock: ${s.error}`);
+    }
+    console.log(formatLockChanges(changes).join("\n"));
+    if (!listed && report.lock.file.mcp?.length) console.log(`MCP tools were not checked: add --mcp to start the servers and compare their tools.`);
+    return changes.length > 0 ? 1 : 0;
   }
+}
+
+/** Starts each MCP server from the config to list its tools, saying first exactly what will run. */
+async function listServers(servers: McpServerConfig[], root: string) {
+  if (servers.length === 0) {
+    console.error("No MCP servers in this folder's MCP config.");
+    return [];
+  }
+  console.error(`Starting ${servers.length} MCP server${servers.length === 1 ? "" : "s"} from your config to list their tools:`);
+  for (const s of servers) console.error(`  ${describeServer(s)}`);
+  return listMcpTools(servers, { cwd: root });
 }
 
 async function saveCommand(args: string[]): Promise<number> {

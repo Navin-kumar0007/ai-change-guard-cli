@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import type { McpServerConfig } from "./mcp-tools.js";
 import { isAiContent, type FileKind } from "./detect.js";
 import { findPromptsInText } from "./prompts.js";
 
@@ -213,20 +214,47 @@ function parseJsonc(text: string): unknown {
   }
 }
 
-function mcpFindings(file: string, content: string, lines: string[]): SecurityFinding[] {
+const strings = (v: unknown): Record<string, string> | undefined =>
+  v && typeof v === "object" && !Array.isArray(v)
+    ? Object.fromEntries(Object.entries(v as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === "string"))
+    : undefined;
+
+/** The MCP servers a config file declares (mcpServers, servers, or VS Code's "mcp": { "servers" }). */
+export function parseMcpServers(file: string, content: string): McpServerConfig[] {
   const config = parseJsonc(content);
   if (config === undefined) return [];
   const root = (config ?? {}) as Record<string, unknown>;
   const servers = (root.mcpServers ?? root.servers ?? (root.mcp as Record<string, unknown> | undefined)?.servers) as Record<string, unknown> | undefined;
   if (!servers || typeof servers !== "object") return [];
-  const out: SecurityFinding[] = [];
+  const out: McpServerConfig[] = [];
   for (const [name, raw] of Object.entries(servers)) {
-    const s = raw as { command?: unknown; args?: unknown };
-    if (typeof s?.command !== "string") continue;
+    const s = (raw ?? {}) as { command?: unknown; args?: unknown; env?: unknown; url?: unknown; serverUrl?: unknown; httpUrl?: unknown; headers?: unknown };
     const args = Array.isArray(s.args) ? s.args.filter((a): a is string => typeof a === "string") : [];
-    const parsed = packageSpec(basename(s.command), args);
+    const url = [s.url, s.serverUrl, s.httpUrl].find((u): u is string => typeof u === "string");
+    if (typeof s.command === "string") {
+      const env = strings(s.env);
+      out.push({ name, file, command: s.command, args, ...(env ? { env } : {}) });
+    } else if (url) {
+      const headers = strings(s.headers);
+      out.push({ name, file, url, args: [], ...(headers ? { headers } : {}) });
+    }
+  }
+  return out;
+}
+
+/** Whether a file is an MCP config the scanner reads. */
+export function isMcpConfig(file: string, content: string, kind: FileKind): boolean {
+  const vscodeSettings = /(?:^|\/)settings\.json$/i.test(file) && content.includes('"mcp"') && content.includes('"servers"');
+  return kind === "config" && (MCP_FILE_RE.test(file) || content.includes('"mcpServers"') || vscodeSettings);
+}
+
+function mcpFindings(file: string, content: string, lines: string[]): SecurityFinding[] {
+  const out: SecurityFinding[] = [];
+  for (const server of parseMcpServers(file, content)) {
+    if (!server.command) continue;
+    const parsed = packageSpec(basename(server.command), server.args);
     if (!parsed || parsed.pinned) continue;
-    out.push({ file, line: lineOf(lines, parsed.spec), rule: "unpinned-mcp-server", detail: `${name}: ${parsed.spec}` });
+    out.push({ file, line: lineOf(lines, parsed.spec), rule: "unpinned-mcp-server", detail: `${server.name}: ${parsed.spec}` });
   }
   return out;
 }
@@ -259,8 +287,7 @@ export function findSecurityIssues(file: string, content: string, kind: FileKind
   // MCP configs: the usual file names, or any JSON with an mcpServers key (gemini-extension.json, ...).
   // MCP configs: the usual file names, any JSON with an mcpServers key (gemini-extension.json, ...),
   // and VS Code settings.json with "mcp": { "servers": ... }.
-  const vscodeSettings = /(?:^|\/)settings\.json$/i.test(file) && content.includes('"mcp"') && content.includes('"servers"');
-  if (kind === "config" && (MCP_FILE_RE.test(file) || content.includes('"mcpServers"') || vscodeSettings)) out.push(...mcpFindings(file, content, lines));
+  if (isMcpConfig(file, content, kind)) out.push(...mcpFindings(file, content, lines));
   if (kind !== "code" || TEST_FILE_RE.test(file) || !isAiContent(content)) return out.sort((a, b) => a.line - b.line);
 
   // 2. Model output into eval, a shell, SQL or raw HTML (same line, or through a variable assigned from it).

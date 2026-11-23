@@ -5,7 +5,8 @@ import { compileApiRules, scanText, type Finding } from "./detect.js";
 import { isDependencyFile, lineOf, ownPackageName, parseDependencies, privateRegistries, type Dependency } from "./deps.js";
 import { isAiRelated } from "./packages.js";
 import { LOCK_FILE, parseBaselineSummary, type LockedBaseline } from "./lock.js";
-import { findSecurityIssues, type SecurityFinding } from "./security.js";
+import { findSecurityIssues, isMcpConfig, parseMcpServers, type SecurityFinding } from "./security.js";
+import type { McpServerConfig } from "./mcp-tools.js";
 import { findTokenTips, type TokenTip } from "./tokens.js";
 import { walk } from "./walk.js";
 
@@ -27,6 +28,8 @@ export interface ScanResult {
   baselines?: LockedBaseline[];
   /** The folder's ai-stack.lock, as text, when it has one. */
   lockText?: string;
+  /** MCP servers declared in the folder's MCP configs (env and header values included: never store these). */
+  mcpServers?: McpServerConfig[];
 }
 
 export async function scanDirectory(root: string): Promise<ScanResult> {
@@ -34,7 +37,7 @@ export async function scanDirectory(root: string): Promise<ScanResult> {
   if (!info?.isDirectory()) throw new Error(`Not a folder: ${root}`);
 
   const rules = compileApiRules(apis);
-  const result: ScanResult = { root, filesScanned: 0, aiFiles: 0, callSites: 0, findings: [], tokenTips: [], security: [], dependencies: [], baselines: [] };
+  const result: ScanResult = { root, filesScanned: 0, aiFiles: 0, callSites: 0, findings: [], tokenTips: [], security: [], dependencies: [], baselines: [], mcpServers: [] };
 
   const ownPackages = new Set<string>();
   for await (const file of walk(root)) {
@@ -68,6 +71,7 @@ export async function scanDirectory(root: string): Promise<ScanResult> {
     result.findings.push(...scanned.findings);
     if (scanned.isAiFile) result.tokenTips.push(...findTokenTips(file.rel, content, file.kind));
     result.security.push(...findSecurityIssues(file.rel, content, file.kind));
+    if (isMcpConfig(file.rel, content, file.kind)) result.mcpServers!.push(...parseMcpServers(file.rel, content));
   }
   // The repo's own workspace packages are not installed from a registry.
   result.dependencies = result.dependencies!.filter((d) => !(d.ecosystem === "npm" && ownPackages.has(d.name)));

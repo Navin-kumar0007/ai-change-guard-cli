@@ -44,6 +44,7 @@
   "dependencies": {
     "@ai-change-guard/catalog": "0.1.0",
     "@ai-change-guard/llm": "0.1.0",
-    "@ai-change-guard/replay": "0.1.0"
+    "@ai-change-guard/replay": "0.1.0",
+    "@modelcontextprotocol/client": "2.4.0"
   }
 }

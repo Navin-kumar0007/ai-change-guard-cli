@@ -8,6 +8,7 @@
 //               a price change): what the nightly check alerts on.
 import { lookupPrice, lookupPriceChanges, type Platform } from "@ai-change-guard/catalog";
 import { classifyModelId } from "./detect.js";
+import type { McpServerTools, McpToolPrint } from "./mcp-tools.js";
 import type { Report } from "./report.js";
 
 export const LOCK_FILE = "ai-stack.lock";
@@ -50,20 +51,30 @@ export interface LockedBaseline {
   prompts: number;
 }
 
+/** An MCP server's tools, as listed when the lock was written with --mcp. */
+export interface LockedMcpServer {
+  name: string;
+  file: string;
+  tools: McpToolPrint[];
+}
+
 export interface AiStackLock {
   lockfileVersion: number;
   models: LockedModel[];
   apis: LockedApi[];
   packages: LockedPackage[];
   baselines: LockedBaseline[];
+  /** Present once written with `lock --mcp`. */
+  mcp?: LockedMcpServer[];
 }
 
 /**
  * outdated: the code changed and the lock was not rewritten (run `lock`).
  * catalog: the catalog changed since the lock was written (a retirement, reroute, replacement or price).
  * unverified: a baseline verifies a model the code no longer uses (make a new baseline).
+ * mcp: an MCP server's tools changed since the lock was written (checked with --mcp only).
  */
-export type LockChangeKind = "outdated" | "catalog" | "unverified";
+export type LockChangeKind = "outdated" | "catalog" | "unverified" | "mcp";
 
 export interface LockChange {
   kind: LockChangeKind;
@@ -95,8 +106,8 @@ export function baselineModelId(ref: string): string {
   return classifyModelId(model)?.id ?? model.toLowerCase();
 }
 
-/** The lock for a scan report. */
-export function buildLock(report: Report, baselines: LockedBaseline[] = []): AiStackLock {
+/** The lock for a scan report. `mcp` (servers whose tools were listed) adds the mcp section. */
+export function buildLock(report: Report, baselines: LockedBaseline[] = [], mcp?: LockedMcpServer[]): AiStackLock {
   const models = report.models
     .map((m): LockedModel => {
       const listed = lookupPrice(m.id, m.platform as Platform);
@@ -121,7 +132,56 @@ export function buildLock(report: Report, baselines: LockedBaseline[] = []): AiS
       .map((p) => ({ ecosystem: p.ecosystem, name: p.name, versions: [...p.versions].sort(codePoint), files: filesOf(p.locations) }))
       .sort(byText((p) => `${p.ecosystem}|${p.name}`)),
     baselines: [...baselines].sort(byText((b) => b.file)),
+    ...(mcp ? { mcp: [...mcp].sort(byText((s) => `${s.file}|${s.name}`)) } : {}),
   };
+}
+
+/**
+ * The mcp section to write: servers listed now, and for a server that could not be listed this time, what the
+ * old lock had (so a server that is down does not drop out of the lock).
+ */
+export function mcpSection(listed: McpServerTools[], old: LockedMcpServer[] | undefined): LockedMcpServer[] {
+  return listed.flatMap((s): LockedMcpServer[] => {
+    if (s.tools) return [{ name: s.name, file: s.file, tools: s.tools }];
+    const kept = old?.find((o) => o.name === s.name && o.file === s.file);
+    return kept ? [kept] : [];
+  });
+}
+
+const short = (text: string) => (text.length > 140 ? `${text.slice(0, 137)}...` : text);
+
+/** What changed in the MCP servers' tools since the lock: tools added, removed, or with a new description or inputs. */
+export function compareMcp(locked: LockedMcpServer[] | undefined, listed: McpServerTools[]): LockChange[] {
+  const changes: LockChange[] = [];
+  const add = (subject: string, detail: string) => changes.push({ kind: "mcp", subject, detail });
+  const before = new Map((locked ?? []).map((s) => [`${s.file}|${s.name}`, s]));
+  for (const s of listed) {
+    const subject = `MCP server ${s.name} (${s.file})`;
+    const old = before.get(`${s.file}|${s.name}`);
+    before.delete(`${s.file}|${s.name}`);
+    if (!s.tools) {
+      // A locked server that stops answering can't be verified; one never locked is only a warning for the caller.
+      if (old) add(subject, `could not list its tools, so they could not be compared: ${s.error ?? "unknown error"}`);
+      continue;
+    }
+    if (!old) {
+      add(subject, `new, with ${s.tools.length} tool${s.tools.length === 1 ? "" : "s"}: ${s.tools.map((t) => t.name).join(", ")}`);
+      continue;
+    }
+    const oldTools = new Map(old.tools.map((t) => [t.name, t]));
+    for (const t of s.tools) {
+      const was = oldTools.get(t.name);
+      oldTools.delete(t.name);
+      if (!was) add(subject, `new tool ${t.name}: ${short(t.description)}`);
+      else {
+        if (was.description !== t.description) add(subject, `tool ${t.name} has a new description (read it before trusting it): "${short(t.description)}"`);
+        if (was.inputs !== t.inputs) add(subject, `tool ${t.name} takes different inputs`);
+      }
+    }
+    for (const name of oldTools.keys()) add(subject, `tool ${name} removed`);
+  }
+  for (const s of before.values()) add(`MCP server ${s.name} (${s.file})`, "no longer in the MCP config");
+  return changes;
 }
 
 export function serializeLock(lock: AiStackLock): string {
@@ -153,12 +213,15 @@ export function parseLock(text: string): AiStackLock {
     return value as never[];
   };
   const price = (v: unknown) => v === undefined || (isObj(v) && typeof v.input === "number" && typeof v.output === "number");
+  const tool = (t: unknown) => isObj(t) && isStr(t.name) && isStr(t.description) && isStr(t.inputs);
+  const mcp = data.mcp === undefined ? undefined : list("mcp", (e) => isStr(e.name) && isStr(e.file) && Array.isArray(e.tools) && e.tools.every(tool));
   return {
     lockfileVersion: LOCKFILE_VERSION,
     models: list("models", (e) => isStr(e.id) && isStr(e.platform) && isStrArray(e.files) && price(e.price) && (e.priceChanges === undefined || isStrArray(e.priceChanges))),
     apis: list("apis", (e) => isStr(e.id) && isStr(e.name) && isStr(e.retiresOn) && isStrArray(e.files)),
     packages: list("packages", (e) => isStr(e.ecosystem) && isStr(e.name) && isStrArray(e.versions) && isStrArray(e.files)),
     baselines: list("baselines", (e) => isStr(e.file) && isStr(e.model) && isStr(e.createdAt) && typeof e.prompts === "number"),
+    ...(mcp ? { mcp } : {}),
   };
 }
 
@@ -248,6 +311,7 @@ export function groupLockChanges(changes: LockChange[]): { kind: LockChangeKind;
     { kind: "catalog", heading: "changed in the catalog since the lock was written", remedy: "check these, then run ai-change-guard lock and commit" },
     { kind: "outdated", heading: "out of date with the code", remedy: "run ai-change-guard lock and commit it, so the pull request shows the AI stack change" },
     { kind: "unverified", heading: "model switched without a new baseline", remedy: "make a new baseline for the model in use with ai-change-guard baseline" },
+    { kind: "mcp", heading: "MCP tools changed since the lock was written", remedy: "read the changes; if you trust them, run ai-change-guard lock --mcp and commit" },
   ];
   return groups.map((g) => ({ ...g, changes: changes.filter((c) => c.kind === g.kind) })).filter((g) => g.changes.length > 0);
 }

@@ -11,8 +11,11 @@ inputs:
   fail-on:
     description: "Fail the step when a model or API is: retired, retiring (within 90 days), or none. A malicious AI package release in a lockfile fails the step unless this is none."
     default: retired
+  mcp-tools:
+    description: "true starts the MCP servers in the repository's MCP config on this runner and compares their tools (names, descriptions, inputs) with ai-stack.lock. Runs the commands in that config."
+    default: "false"
   lock-fail-on:
-    description: "When the repository has an ai-stack.lock: fail the step if it differs from the code or the catalog (any), only from the code (outdated), only from the catalog (catalog), only a model switched without a new baseline (unverified), or never (none)."
+    description: "When the repository has an ai-stack.lock: fail the step if it differs from the code or the catalog (any), only from the code (outdated), only from the catalog (catalog), only a model switched without a new baseline (unverified), only MCP tools changed (mcp, with mcp-tools: true), or never (none)."
     default: "none"
   online-package-check:
     description: "true to also check AI packages online: OSV malicious-code advisories, and npm / PyPI for AI-sounding names that don't exist or are brand new. Sends package names and versions, never code."

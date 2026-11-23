@@ -17,7 +17,7 @@ import {
   runWatch,
   slackMessage,
 } from "@ai-change-guard/replay";
-import { addOnlinePackageChecks, buildCheck, buildReport, checkSwitchIds, planSwitch, scanDirectory, type Report } from "@ai-change-guard/scanner";
+import { addOnlinePackageChecks, buildCheck, buildReport, checkSwitchIds, compareMcp, describeServer, listMcpTools, planSwitch, scanDirectory, type Report } from "@ai-change-guard/scanner";
 import { githubApi, openEvidencePr, type GitHubApi } from "./pr.js";
 
 const SOON_DAYS = 90;
@@ -93,13 +93,24 @@ export async function run({ env, today, log, client, github }: RunDeps): Promise
   };
 
   const failOn = oneOf(input("fail-on", env) || "retired", "fail-on", ["retired", "retiring", "none"]);
-  const lockFailOn = oneOf(input("lock-fail-on", env) || "none", "lock-fail-on", ["none", "any", "outdated", "catalog", "unverified"]);
+  const lockFailOn = oneOf(input("lock-fail-on", env) || "none", "lock-fail-on", ["none", "any", "outdated", "catalog", "unverified", "mcp"]);
   const openPr = oneOf(input("open-pr", env) || "false", "open-pr", ["true", "false"]) === "true";
   const scanRoot = resolve(workspace, input("path", env) || ".");
   const scan = await scanDirectory(scanRoot);
   let report = buildReport(scan, env.GITHUB_REPOSITORY ?? workspace, today);
   if (oneOf(input("online-package-check", env) || "false", "online-package-check", ["true", "false"]) === "true") {
     report = await addOnlinePackageChecks(report, { today });
+  }
+  if (oneOf(input("mcp-tools", env) || "false", "mcp-tools", ["true", "false"]) === "true") {
+    // Starts the repository's own MCP servers on this runner to compare their tools with ai-stack.lock.
+    const servers = scan.mcpServers ?? [];
+    if (!report.lock || !("file" in report.lock)) log("::notice::AI Change Guard: mcp-tools needs an ai-stack.lock written with: ai-change-guard lock --mcp");
+    else if (servers.length > 0) {
+      log(`AI Change Guard: starting ${servers.length} MCP server(s) to list their tools: ${servers.map(describeServer).join("; ")}`);
+      const listed = await listMcpTools(servers, { cwd: scanRoot, env });
+      for (const s of listed) if (s.error) log(`::warning::AI Change Guard: could not list the tools of ${s.name} (${s.file}): ${s.error}`);
+      report = { ...report, lock: { ...report.lock, changes: [...report.lock.changes, ...compareMcp(report.lock.file.mcp, listed)] } };
+    }
   }
   const check = buildCheck(report, null);
   await summary(`## AI Change Guard: ${check.title}\n\n${check.summary}`);
