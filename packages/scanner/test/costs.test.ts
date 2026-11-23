@@ -269,3 +269,12 @@ describe("isPriceRise", () => {
     expect(isPriceRise({ before, after: { input: 2, output: 1 } })).toBe(false);
   });
 });
+
+describe("refreshing a row the catalog does not know", () => {
+  it("keeps the stored date and recounts the days", () => {
+    const base = buildReport({ root: "/tmp/x", filesScanned: 1, aiFiles: 1, callSites: 1, findings: [], tokenTips: [] }, "demo", TODAY);
+    const row = { id: "made-up-model", provider: "openai" as const, platform: "openai-api" as const, status: "rerouting" as const, date: "2026-12-01", daysLeft: 8, reroutesTo: "x", fineTuned: false, gateways: [], otherPlatforms: [], locations: ["a.py:1"] };
+    const fresh = refreshReport({ ...base, models: [row] }, "2026-12-05");
+    expect(fresh.models[0]).toMatchObject({ status: "rerouted", daysLeft: -4, date: "2026-12-01", reroutesTo: "x" });
+  });
+});

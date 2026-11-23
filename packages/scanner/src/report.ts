@@ -126,6 +126,12 @@ export function refreshReport(report: Report, today: string): Report {
   const models = report.models.map((row): ModelRow => {
     const entries = lookupModel(row.id);
     const primary = entries.find((e) => e.platform === row.platform);
+    if (!primary) {
+      // Not in today's catalog: keep what the scan stored, with the days counted again.
+      const kept: ModelRow = { ...row };
+      if (row.date) Object.assign(kept, statusFor({ retiresOn: row.date, ...(row.reroutesTo ? { reroutesTo: row.reroutesTo } : {}) } as ModelEntry, today));
+      return kept;
+    }
     const fresh: ModelRow = {
       id: row.id,
       provider: row.provider,
