@@ -134,6 +134,7 @@ How it behaves:
 | `candidates` | | Models for `find-savings`, comma-separated `provider:model` (default: the 2 nearest cheaper ones in the catalog) |
 | `calls-per-month` | | Your monthly calls to `old-model`, for the monthly saving in the savings card |
 | `mcp-tools` | `false` | `true` starts the MCP servers in the repository's MCP config on this runner and compares their tools with `ai-stack.lock` (needs a lock written with `lock --mcp`). Runs the commands in that config |
+| `mcp-env` | | Environment variables `mcp-tools` may fill into the MCP config's `${VAR}` placeholders, comma-separated. Others stay empty, so a config changed in a pull request can't send runner tokens elsewhere |
 | `lock-fail-on` | `none` | With an `ai-stack.lock` in the repository: fail when it differs from the code or the catalog (`any`), only from the code (`outdated`), only from the catalog (`catalog`), only a model switched without a new baseline (`unverified`), only MCP tools changed (`mcp`) |
 | `online-package-check` | `false` | `true` also checks AI packages online: OSV malicious-code advisories, and npm / PyPI for AI-sounding names that don't exist or are brand new. Sends package names and versions, never code |
 | `prompts` | | Golden set (JSONL) for a replay |

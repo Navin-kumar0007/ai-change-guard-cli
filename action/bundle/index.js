@@ -31611,7 +31611,7 @@ function compareMcp(locked, listed2) {
       if (!was)
         add(subject, `new tool ${t.name}: ${short(t.description)}`);
       else {
-        if (was.description !== t.description)
+        if (was.descriptionHash !== t.descriptionHash)
           add(subject, `tool ${t.name} has a new description (read it before trusting it): "${short(t.description)}"`);
         if (was.inputs !== t.inputs)
           add(subject, `tool ${t.name} takes different inputs`);
@@ -31626,7 +31626,7 @@ function compareMcp(locked, listed2) {
 }
 var LockError = class extends Error {
 };
-var REWRITE = "Write it again with: ai-change-guard lock";
+var REWRITE = "Fix it, or delete it and write a new one with: ai-change-guard lock";
 var isStr = (v) => typeof v === "string";
 var isStrArray = (v) => Array.isArray(v) && v.every(isStr);
 var isObj = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -31649,7 +31649,7 @@ function parseLock(text) {
     return value;
   };
   const price = (v) => v === void 0 || isObj(v) && typeof v.input === "number" && typeof v.output === "number";
-  const tool = (t) => isObj(t) && isStr(t.name) && isStr(t.description) && isStr(t.inputs);
+  const tool = (t) => isObj(t) && isStr(t.name) && isStr(t.description) && isStr(t.descriptionHash) && isStr(t.inputs);
   const mcp = data.mcp === void 0 ? void 0 : list("mcp", (e) => isStr(e.name) && isStr(e.file) && Array.isArray(e.tools) && e.tools.every(tool));
   return {
     lockfileVersion: LOCKFILE_VERSION,
@@ -32175,7 +32175,7 @@ function parseMcpServers(file, content) {
       out.push({ name, file, command: s.command, args, ...env ? { env } : {} });
     } else if (url2) {
       const headers = strings(s.headers);
-      out.push({ name, file, url: url2, args: [], ...headers ? { headers } : {} });
+      out.push({ name, file, url: url2, args: [], ...headers ? { headers } : {}, ...s.type === "sse" ? { transport: "sse" } : {} });
     }
   }
   return out;
@@ -32930,6 +32930,7 @@ async function planSwitch(root, findings, from, to, opts = {}) {
 
 // packages/scanner/dist/mcp-tools.js
 import { createHash as createHash2 } from "node:crypto";
+import { dirname, join as join4 } from "node:path";
 var MAX_DESCRIPTION = 4e3;
 function canonical(value) {
   if (Array.isArray(value))
@@ -32944,14 +32945,30 @@ function fingerprint(value) {
   return createHash2("sha256").update(canonical(value)).digest("hex").slice(0, 16);
 }
 function toolPrints(tools) {
-  return tools.map((t) => ({ name: t.name, description: (t.description ?? "").slice(0, MAX_DESCRIPTION), inputs: fingerprint(t.inputSchema ?? {}) })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  return tools.map((t) => ({
+    name: t.name,
+    description: (t.description ?? "").slice(0, MAX_DESCRIPTION),
+    descriptionHash: fingerprint(t.description ?? ""),
+    inputs: fingerprint(t.inputSchema ?? {})
+  })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 }
 function expandVars(value, env) {
   return value.replace(/\$\{(?:env:)?([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name) => env[name] ?? "");
 }
+var SECRET_ARG = /^(sk-|gh[psu]_|AIza|xox[abp]-|re_|npg_|rzp_)|[A-Za-z0-9_-]{32,}/;
+var SECRET_FLAG = /(key|token|secret|password|auth)/i;
 function describeServer(server) {
-  return server.url ? `${server.name}: ${server.url}` : `${server.name}: ${[server.command, ...server.args].join(" ")}`;
+  if (server.url)
+    return `${server.name}: ${server.url.replace(/\?.*$/, (q) => q ? "?***" : "")}`;
+  const args = server.args.map((a, i) => {
+    const prev = server.args[i - 1] ?? "";
+    if (SECRET_ARG.test(a) || prev.startsWith("-") && SECRET_FLAG.test(prev))
+      return "***";
+    return a.replace(/^(--?[\w-]*(?:key|token|secret|password|auth)[\w-]*=).+$/i, "$1***");
+  });
+  return `${server.name}: ${[server.command, ...args].join(" ")}`;
 }
+var MAX_PAGES = 100;
 async function withTimeout(work, ms, what) {
   let timer;
   try {
@@ -32961,37 +32978,58 @@ async function withTimeout(work, ms, what) {
   }
 }
 async function listServerTools(server, options) {
+  try {
+    return await listOne(server, options);
+  } catch (error2) {
+    return { name: server.name, file: server.file, error: (error2 instanceof Error ? error2.message : String(error2)).slice(0, 300) };
+  }
+}
+async function listOne(server, options) {
   const base = { name: server.name, file: server.file };
   const env = options.env ?? process.env;
-  const { Client: Client2, StreamableHTTPClientTransport: StreamableHTTPClientTransport2 } = await Promise.resolve().then(() => (init_dist3(), dist_exports));
+  const sdk = await Promise.resolve().then(() => (init_dist3(), dist_exports));
+  const timeout = options.timeoutMs ?? 3e4;
+  if (server.url) {
+    const url2 = new URL(expandVars(server.url, env));
+    const headers = Object.fromEntries(Object.entries(server.headers ?? {}).map(([k, v]) => [k, expandVars(v, env)]));
+    const sse = () => new sdk.SSEClientTransport(url2, { requestInit: { headers } });
+    const http = () => new sdk.StreamableHTTPClientTransport(url2, { requestInit: { headers } });
+    if (server.transport === "sse" || url2.pathname.endsWith("/sse"))
+      return listOver(sse(), server, timeout);
+    const first = await listOver(http(), server, timeout);
+    return first.tools ? first : listOver(sse(), server, timeout).then((second) => second.tools ? second : first);
+  }
+  if (!server.command)
+    return { ...base, error: "no command or url in the config" };
+  const { StdioClientTransport: StdioClientTransport2, getDefaultEnvironment: getDefaultEnvironment2 } = await Promise.resolve().then(() => (init_stdio(), stdio_exports));
+  const serverEnv = Object.fromEntries(Object.entries(server.env ?? {}).map(([k, v]) => [k, expandVars(v, env)]));
+  const transport = new StdioClientTransport2({
+    command: expandVars(server.command, env),
+    args: server.args.map((a) => expandVars(a, env)),
+    env: { ...getDefaultEnvironment2(), ...serverEnv },
+    // Relative paths in a config (./server.js) are relative to that config file.
+    cwd: join4(options.cwd, dirname(server.file)),
+    stderr: "ignore"
+  });
+  return listOver(transport, server, timeout);
+}
+async function listOver(transport, server, timeout) {
+  const base = { name: server.name, file: server.file };
+  const { Client: Client2 } = await Promise.resolve().then(() => (init_dist3(), dist_exports));
   const client = new Client2({ name: "ai-change-guard", version: "1" });
   try {
-    let transport;
-    if (server.url) {
-      const headers = Object.fromEntries(Object.entries(server.headers ?? {}).map(([k, v]) => [k, expandVars(v, env)]));
-      transport = new StreamableHTTPClientTransport2(new URL(expandVars(server.url, env)), { requestInit: { headers } });
-    } else if (server.command) {
-      const { StdioClientTransport: StdioClientTransport2, getDefaultEnvironment: getDefaultEnvironment2 } = await Promise.resolve().then(() => (init_stdio(), stdio_exports));
-      const serverEnv = Object.fromEntries(Object.entries(server.env ?? {}).map(([k, v]) => [k, expandVars(v, env)]));
-      transport = new StdioClientTransport2({
-        command: expandVars(server.command, env),
-        args: server.args.map((a) => expandVars(a, env)),
-        env: { ...getDefaultEnvironment2(), ...serverEnv },
-        cwd: options.cwd,
-        stderr: "ignore"
-      });
-    } else {
-      return { ...base, error: "no command or url in the config" };
-    }
-    const timeout = options.timeoutMs ?? 3e4;
     await withTimeout(client.connect(transport), timeout, server.name);
     const tools = [];
+    const seen = /* @__PURE__ */ new Set();
     let cursor;
-    do {
-      const page = await withTimeout(client.listTools(cursor ? { cursor } : {}), timeout, server.name);
-      tools.push(...page.tools);
-      cursor = page.nextCursor;
-    } while (cursor && tools.length < 1e4);
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const result = await withTimeout(client.listTools(cursor ? { cursor } : {}), timeout, server.name);
+      tools.push(...result.tools);
+      cursor = result.nextCursor;
+      if (!cursor || seen.has(cursor))
+        break;
+      seen.add(cursor);
+    }
     return { ...base, tools: toolPrints(tools) };
   } catch (error2) {
     return { ...base, error: (error2 instanceof Error ? error2.message : String(error2)).slice(0, 300) };
@@ -33009,7 +33047,7 @@ async function listMcpTools(servers, options) {
 // action/src/pr.ts
 import { createHash as createHash3 } from "node:crypto";
 import { readFile as readFile4 } from "node:fs/promises";
-import { join as join4, posix } from "node:path";
+import { join as join5, posix } from "node:path";
 var GitHubError = class extends Error {
   constructor(status, message2) {
     super(message2);
@@ -33113,7 +33151,7 @@ async function trackedOnly(input2) {
   for (const [file, content] of plan.files) {
     const path = posix.join(input2.scanPath || ".", file);
     const entry = tracked.get(path);
-    const reason = !entry ? "Not committed in the repository (untracked or gitignored), so it is left out of the PR." : gitBlobSha(await readFile4(join4(input2.workspace, path))) !== entry.sha ? "Changed by an earlier step of this job, so it is left out of the PR." : null;
+    const reason = !entry ? "Not committed in the repository (untracked or gitignored), so it is left out of the PR." : gitBlobSha(await readFile4(join5(input2.workspace, path))) !== entry.sha ? "Changed by an earlier step of this job, so it is left out of the PR." : null;
     const edits = plan.edits.filter((e) => e.file === file);
     if (reason) {
       keep.skipped.push(...edits.map((e) => ({ file, line: e.line, raw: plan.from, reason })));
@@ -33269,10 +33307,13 @@ async function run({ env, today, log, client, github }) {
   }
   if (oneOf(input("mcp-tools", env) || "false", "mcp-tools", ["true", "false"]) === "true") {
     const servers = scan.mcpServers ?? [];
-    if (!report.lock || !("file" in report.lock)) log("::notice::AI Change Guard: mcp-tools needs an ai-stack.lock written with: ai-change-guard lock --mcp");
-    else if (servers.length > 0) {
-      log(`AI Change Guard: starting ${servers.length} MCP server(s) to list their tools: ${servers.map(describeServer).join("; ")}`);
-      const listed2 = await listMcpTools(servers, { cwd: scanRoot, env });
+    if (!report.lock || !("file" in report.lock) || report.lock.file.mcp === void 0) {
+      log("::notice::AI Change Guard: mcp-tools needs an ai-stack.lock with an MCP section, written with: ai-change-guard lock --mcp");
+    } else {
+      const allowed = input("mcp-env", env).split(",").map((v) => v.trim()).filter(Boolean);
+      const mcpEnv = Object.fromEntries(allowed.map((name) => [name, env[name]]));
+      if (servers.length) log(`AI Change Guard: starting ${servers.length} MCP server(s) to list their tools: ${servers.map(describeServer).join("; ")}`);
+      const listed2 = await listMcpTools(servers, { cwd: scanRoot, env: mcpEnv });
       for (const s of listed2) if (s.error) log(`::warning::AI Change Guard: could not list the tools of ${s.name} (${s.file}): ${s.error}`);
       report = { ...report, lock: { ...report.lock, changes: [...report.lock.changes, ...compareMcp(report.lock.file.mcp, listed2)] } };
     }

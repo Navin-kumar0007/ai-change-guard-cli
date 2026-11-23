@@ -104,10 +104,16 @@ export async function run({ env, today, log, client, github }: RunDeps): Promise
   if (oneOf(input("mcp-tools", env) || "false", "mcp-tools", ["true", "false"]) === "true") {
     // Starts the repository's own MCP servers on this runner to compare their tools with ai-stack.lock.
     const servers = scan.mcpServers ?? [];
-    if (!report.lock || !("file" in report.lock)) log("::notice::AI Change Guard: mcp-tools needs an ai-stack.lock written with: ai-change-guard lock --mcp");
-    else if (servers.length > 0) {
-      log(`AI Change Guard: starting ${servers.length} MCP server(s) to list their tools: ${servers.map(describeServer).join("; ")}`);
-      const listed = await listMcpTools(servers, { cwd: scanRoot, env });
+    if (!report.lock || !("file" in report.lock) || report.lock.file.mcp === undefined) {
+      log("::notice::AI Change Guard: mcp-tools needs an ai-stack.lock with an MCP section, written with: ai-change-guard lock --mcp");
+    } else {
+      // Only the variables the workflow names in mcp-env are filled into the config: a config changed in a
+      // pull request must not be able to send other runner variables (tokens) to a URL of its choosing.
+      const allowed = input("mcp-env", env).split(",").map((v) => v.trim()).filter(Boolean);
+      const mcpEnv = Object.fromEntries(allowed.map((name) => [name, env[name]]));
+      if (servers.length) log(`AI Change Guard: starting ${servers.length} MCP server(s) to list their tools: ${servers.map(describeServer).join("; ")}`);
+      // Servers that left the config are reported too, so the list is compared even when it is empty.
+      const listed = await listMcpTools(servers, { cwd: scanRoot, env: mcpEnv });
       for (const s of listed) if (s.error) log(`::warning::AI Change Guard: could not list the tools of ${s.name} (${s.file}): ${s.error}`);
       report = { ...report, lock: { ...report.lock, changes: [...report.lock.changes, ...compareMcp(report.lock.file.mcp, listed)] } };
     }

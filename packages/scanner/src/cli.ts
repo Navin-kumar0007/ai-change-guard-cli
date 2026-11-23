@@ -538,18 +538,21 @@ async function lockCommand(args: string[]): Promise<number> {
   if (!DATE_RE.test(today)) throw new UsageError("--today must look like 2026-11-17");
   const root = resolve(folder);
   const scanned = await scanDirectory(root);
-  const oldText = scanned.lockText;
-  let old: AiStackLock | undefined;
-  try {
-    old = oldText === undefined ? undefined : parseLock(oldText);
-  } catch {
-    old = undefined;
-  }
-  const listed = f["--mcp"] ? await listServers(scanned.mcpServers ?? [], root) : undefined;
+  const servers = scanned.mcpServers ?? [];
   if (!f["--check"]) {
-    // Writing: the old lock is replaced, so it is not compared. Without --mcp its MCP section is kept as it was.
+    // Writing replaces the old lock, but its MCP section is carried over (all of it without --mcp, and for
+    // servers that are down with --mcp), so a lock that can't be read must be fixed first, not dropped.
+    let old: AiStackLock | undefined;
+    try {
+      old = scanned.lockText === undefined ? undefined : parseLock(scanned.lockText);
+    } catch (error) {
+      console.error(`${error instanceof Error ? error.message : String(error)}\nFix ${LOCK_FILE} (or delete it to start over), then run lock again.`);
+      return 1;
+    }
     delete scanned.lockText;
-    const mcp = listed ? mcpSection(listed, old?.mcp) : old?.mcp;
+    const stillConfigured = (o: { name: string; file: string }) => servers.some((s) => s.name === o.name && s.file === o.file);
+    const listed = f["--mcp"] ? await listServers(servers, root) : undefined;
+    const mcp = listed ? mcpSection(listed, old?.mcp) : old?.mcp?.filter(stillConfigured);
     const lock = buildLock(buildReport(scanned, folder, today), scanned.baselines ?? [], mcp);
     await writeFile(join(root, LOCK_FILE), serializeLock(lock));
     console.log(
@@ -570,13 +573,18 @@ async function lockCommand(args: string[]): Promise<number> {
       console.log(report.lock.error);
       return 1;
     }
+    // Servers are started only once the lock is known to be readable and to have an MCP section to compare.
+    let listed: Awaited<ReturnType<typeof listServers>> | undefined;
+    if (f["--mcp"] && report.lock.file.mcp === undefined) {
+      console.log(`${LOCK_FILE} has no MCP section yet: write one with ai-change-guard lock --mcp, then check again.`);
+    } else if (f["--mcp"]) listed = await listServers(servers, root);
     const changes = [...report.lock.changes, ...(listed ? compareMcp(report.lock.file.mcp, listed) : [])];
     const lockedMcp = report.lock.file.mcp ?? [];
     for (const s of listed ?? []) {
       if (s.error && !lockedMcp.some((o) => o.name === s.name && o.file === s.file)) console.error(`Could not list the tools of ${s.name} (${s.file}), which is not in the lock: ${s.error}`);
     }
     console.log(formatLockChanges(changes).join("\n"));
-    if (!listed && report.lock.file.mcp?.length) console.log(`MCP tools were not checked: add --mcp to start the servers and compare their tools.`);
+    if (!f["--mcp"] && report.lock.file.mcp?.length) console.log(`MCP tools were not checked: add --mcp to start the servers and compare their tools.`);
     return changes.length > 0 ? 1 : 0;
   }
 }

@@ -228,7 +228,7 @@ export function parseMcpServers(file: string, content: string): McpServerConfig[
   if (!servers || typeof servers !== "object") return [];
   const out: McpServerConfig[] = [];
   for (const [name, raw] of Object.entries(servers)) {
-    const s = (raw ?? {}) as { command?: unknown; args?: unknown; env?: unknown; url?: unknown; serverUrl?: unknown; httpUrl?: unknown; headers?: unknown };
+    const s = (raw ?? {}) as { command?: unknown; args?: unknown; env?: unknown; url?: unknown; serverUrl?: unknown; httpUrl?: unknown; headers?: unknown; type?: unknown };
     const args = Array.isArray(s.args) ? s.args.filter((a): a is string => typeof a === "string") : [];
     const url = [s.url, s.serverUrl, s.httpUrl].find((u): u is string => typeof u === "string");
     if (typeof s.command === "string") {
@@ -236,7 +236,7 @@ export function parseMcpServers(file: string, content: string): McpServerConfig[
       out.push({ name, file, command: s.command, args, ...(env ? { env } : {}) });
     } else if (url) {
       const headers = strings(s.headers);
-      out.push({ name, file, url, args: [], ...(headers ? { headers } : {}) });
+      out.push({ name, file, url, args: [], ...(headers ? { headers } : {}), ...(s.type === "sse" ? { transport: "sse" as const } : {}) });
     }
   }
   return out;

@@ -174,7 +174,8 @@ export function compareMcp(locked: LockedMcpServer[] | undefined, listed: McpSer
       oldTools.delete(t.name);
       if (!was) add(subject, `new tool ${t.name}: ${short(t.description)}`);
       else {
-        if (was.description !== t.description) add(subject, `tool ${t.name} has a new description (read it before trusting it): "${short(t.description)}"`);
+        // Compared on the full description's fingerprint: a change past the shortened text still counts.
+        if (was.descriptionHash !== t.descriptionHash) add(subject, `tool ${t.name} has a new description (read it before trusting it): "${short(t.description)}"`);
         if (was.inputs !== t.inputs) add(subject, `tool ${t.name} takes different inputs`);
       }
     }
@@ -190,7 +191,7 @@ export function serializeLock(lock: AiStackLock): string {
 
 export class LockError extends Error {}
 
-const REWRITE = "Write it again with: ai-change-guard lock";
+const REWRITE = "Fix it, or delete it and write a new one with: ai-change-guard lock";
 const isStr = (v: unknown): v is string => typeof v === "string";
 const isStrArray = (v: unknown): v is string[] => Array.isArray(v) && v.every(isStr);
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -213,7 +214,7 @@ export function parseLock(text: string): AiStackLock {
     return value as never[];
   };
   const price = (v: unknown) => v === undefined || (isObj(v) && typeof v.input === "number" && typeof v.output === "number");
-  const tool = (t: unknown) => isObj(t) && isStr(t.name) && isStr(t.description) && isStr(t.inputs);
+  const tool = (t: unknown) => isObj(t) && isStr(t.name) && isStr(t.description) && isStr(t.descriptionHash) && isStr(t.inputs);
   const mcp = data.mcp === undefined ? undefined : list("mcp", (e) => isStr(e.name) && isStr(e.file) && Array.isArray(e.tools) && e.tools.every(tool));
   return {
     lockfileVersion: LOCKFILE_VERSION,

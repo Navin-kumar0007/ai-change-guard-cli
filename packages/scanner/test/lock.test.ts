@@ -98,7 +98,7 @@ describe("ai-stack.lock", () => {
     expect(() => parseLock('{"lockfileVersion": 9}')).toThrow(/lockfileVersion 9/);
     const dir = await project({ ...APP, "ai-stack.lock": "{nope" });
     const report = buildReport(await scanDirectory(dir), "demo", TODAY);
-    expect(report.lock).toEqual({ error: "ai-stack.lock is not valid JSON. Write it again with: ai-change-guard lock" });
+    expect(report.lock).toEqual({ error: "ai-stack.lock is not valid JSON. Fix it, or delete it and write a new one with: ai-change-guard lock" });
   });
 
   it("reads only real baseline files", () => {

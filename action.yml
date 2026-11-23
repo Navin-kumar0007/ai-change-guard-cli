@@ -14,6 +14,9 @@ inputs:
   mcp-tools:
     description: "true starts the MCP servers in the repository's MCP config on this runner and compares their tools (names, descriptions, inputs) with ai-stack.lock. Runs the commands in that config."
     default: "false"
+  mcp-env:
+    description: "Comma-separated environment variable names that mcp-tools may fill into the MCP config's ${VAR} placeholders (for example MCP_API_KEY). Others stay empty."
+    default: ""
   lock-fail-on:
     description: "When the repository has an ai-stack.lock: fail the step if it differs from the code or the catalog (any), only from the code (outdated), only from the catalog (catalog), only a model switched without a new baseline (unverified), only MCP tools changed (mcp, with mcp-tools: true), or never (none)."
     default: "none"
