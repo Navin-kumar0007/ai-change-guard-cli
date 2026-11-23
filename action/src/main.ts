@@ -1,7 +1,17 @@
-import { appendFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { createClient, parseModelRef, withRetry, type LlmClient } from "@ai-change-guard/llm";
-import { formatRepairMarkdown, formatReplayMarkdown, loadGoldenSet, runReplayJob } from "@ai-change-guard/replay";
+import {
+  formatRepairMarkdown,
+  formatReplayMarkdown,
+  formatWatchMarkdown,
+  loadGoldenSet,
+  parseBaseline,
+  postSlack,
+  runReplayJob,
+  runWatch,
+  slackMessage,
+} from "@ai-change-guard/replay";
 import { buildCheck, buildReport, checkSwitchIds, planSwitch, scanDirectory, type Report } from "@ai-change-guard/scanner";
 import { githubApi, openEvidencePr, type GitHubApi } from "./pr.js";
 
@@ -81,6 +91,37 @@ export async function run({ env, today, log, client, github }: RunDeps): Promise
   const prompts = input("prompts", env);
   const oldModel = input("old-model", env);
   const newModel = input("new-model", env);
+
+  // Watch: ask the model in use again and compare with the committed baseline.
+  const baselinePath = input("baseline", env);
+  if (baselinePath) {
+    if (!prompts) throw new Error('A watch needs "prompts" (the golden set the baseline was made from).');
+    if (oldModel || newModel || openPr) throw new Error('"baseline" runs a watch of one model; leave out old-model, new-model and open-pr.');
+    const baseline = parseBaseline(await readFile(resolve(workspace, baselinePath), "utf8"));
+    const items = await loadGoldenSet(resolve(workspace, prompts));
+    const runsInput = input("runs", env);
+    const watch = await runWatch({
+      items,
+      baseline,
+      client: client ?? withRetry(createClient({ env })),
+      concurrency: positive(input("concurrency", env) || "2", "concurrency"),
+      maxCalls: positive(input("max-calls", env) || "300", "max-calls"),
+      ...(runsInput ? { runs: positive(runsInput, "runs") } : {}),
+    });
+    await summary(formatWatchMarkdown(watch));
+    const runUrl = env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY && env.GITHUB_RUN_ID ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}` : undefined;
+    const webhook = input("slack-webhook", env);
+    if (watch.alert && webhook) {
+      await postSlack(webhook, slackMessage(watch, runUrl)).then(
+        () => log("AI Change Guard watch: alert posted to Slack"),
+        (error: unknown) => log(`::warning::AI Change Guard watch: could not post to Slack: ${error instanceof Error ? error.message : String(error)}`),
+      );
+    }
+    const t = watch.report.totals;
+    log(`${watch.alert ? "::error::" : ""}AI Change Guard watch: ${t.same} same, ${t.changed} changed, ${t.broken} broken${watch.reroutes.length ? `, rerouted to ${watch.reroutes.map((r) => r.served).join(", ")}` : ""}`);
+    return failed || watch.alert ? 1 : 0;
+  }
+
   if (openPr && !(prompts && oldModel && newModel)) {
     throw new Error('open-pr needs a replay as proof: set "prompts", "old-model" and "new-model".');
   }

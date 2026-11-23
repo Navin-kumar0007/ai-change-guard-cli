@@ -1,6 +1,6 @@
 import type { GoldenItem } from "./golden.js";
 import type { RunRecord, Side } from "./run.js";
-import { judgeItem, type ItemResult, type Verdict } from "./verdict.js";
+import { judgeItem, type ItemResult, type JudgeOptions, type Verdict } from "./verdict.js";
 
 export interface Reroute {
   side: Side;
@@ -32,7 +32,8 @@ const VERDICT_ORDER: Record<Verdict, number> = { broken: 0, changed: 1, error: 2
 
 const average = (values: number[]) => (values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0);
 
-function modelName(ref: string): string {
+/** The model part of a provider:model reference. */
+export function modelName(ref: string): string {
   return ref.slice(ref.indexOf(":") + 1);
 }
 
@@ -49,9 +50,9 @@ export function isReroute(requested: string, served: string): boolean {
 export function buildReplayReport(
   items: GoldenItem[],
   records: RunRecord[],
-  options: { oldModel: string; newModel: string; runs: number },
+  options: { oldModel: string; newModel: string; runs: number; judge?: JudgeOptions },
 ): ReplayReport {
-  const results = items.map((item) => judgeItem(item, records)).sort((a, b) => VERDICT_ORDER[a.verdict] - VERDICT_ORDER[b.verdict]);
+  const results = items.map((item) => judgeItem(item, records, options.judge)).sort((a, b) => VERDICT_ORDER[a.verdict] - VERDICT_ORDER[b.verdict]);
   const totals: Record<Verdict, number> = { same: 0, changed: 0, broken: 0, error: 0 };
   for (const r of results) totals[r.verdict]++;
 

@@ -42,6 +42,42 @@ Providers: `openai`, `anthropic`, `google`, `groq`, `openrouter`, `mistral`, `ol
 
 Pull requests from forks do not receive your secrets, so the replay step cannot run on them.
 
+## Nightly watch: is your model still answering the same way?
+
+Providers update models behind the same name and quietly reroute old ones. A watch asks the model you use again every night and compares the answers with a baseline you commit once.
+
+1. Make the baseline on your machine (5 runs per prompt) and commit it next to the golden set:
+
+   ```
+   ai-change-guard baseline --set tests/golden.jsonl --model openai:gpt-4o --out tests/golden.baseline.json
+   ```
+
+2. Add a nightly workflow:
+
+   ```yaml
+   # .github/workflows/ai-watch.yml
+   name: AI model watch
+   on:
+     schedule:
+       - cron: "30 2 * * *"
+     workflow_dispatch:
+   jobs:
+     watch:
+       runs-on: ubuntu-latest
+       steps:
+         - uses: actions/checkout@v4
+         - uses: Navin-kumar0007/ai-change-guard-cli@v1
+           with:
+             fail-on: none
+             prompts: tests/golden.jsonl
+             baseline: tests/golden.baseline.json
+             slack-webhook: ${{ secrets.SLACK_WEBHOOK_URL }}   # optional
+           env:
+             OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+   ```
+
+The step fails, so GitHub emails you, only when something changed: at least 3 of 5 answers to a prompt changed or broke compared with the baseline, the provider served a different model than the one requested (a reroute), or a different snapshot than at baseline time. The Summary lists each changed prompt and why. With `slack-webhook`, the same alert goes to Slack with counts and prompt names only, never prompt or answer text. Prompts edited since the baseline are left out until you make a new baseline. A watch costs prompts × 5 calls a night.
+
 ## Prompt Repair
 
 Add `repair: true` to a replay. When the new model breaks a prompt's JSON format, the Action tries a JSON-only instruction in the system prompt, then that plus the provider's JSON mode, re-tests each on the new model, and shows the change that works in the Summary. The step still fails until you apply the fix to your prompt; repair calls count against `max-calls`.
@@ -100,6 +136,8 @@ How it behaves:
 | `concurrency` | `2` | Calls in flight; use `1` on free-tier keys |
 | `max-calls` | `300` | Spend cap for one replay |
 | `replay-fail-on` | `broken` | Fail when a prompt is `broken`, `changed`, or `none` |
+| `baseline` | | Watch mode: compare the model in use with this baseline file |
+| `slack-webhook` | | Watch mode: Slack incoming-webhook URL for alerts (from a secret) |
 | `repair` | `false` | When a JSON format breaks, try prompt fixes on the new model and show the one that works |
 | `open-pr` | `false` | After a passing replay, open a pull request that switches the model |
 | `github-token` | `github.token` | Token for the pull request |

@@ -120,3 +120,31 @@ describe("Prompt Repair in the Action", () => {
     expect(lines.at(-1)).toBe("::error::AI Change Guard replay: 0 same, 0 changed, 1 broken");
   });
 });
+
+describe("watch mode", () => {
+  it("passes quietly when the model answers like the baseline, and fails with a summary when it breaks", async () => {
+    const { createBaseline, parseGoldenSet } = await import("@ai-change-guard/replay");
+    const golden = '{"id":"a","input":"Reply in JSON","expect":{"json":true}}\n';
+    const answer = (text: string) => ({ text, toolCalls: [], inputTokens: 1, outputTokens: 1, latencyMs: 1, refused: false, servedModel: "gpt-4o-2024-08-06" });
+    const steady: LlmClient = async () => answer('{"ok": true}');
+    const baseline = await createBaseline({ items: parseGoldenSet(golden), model: "openai:gpt-4o", client: steady, runs: 5, concurrency: 1 });
+    const files = { "tests/golden.jsonl": golden, "tests/golden.baseline.json": JSON.stringify(baseline) };
+    // runs: "" is what GitHub passes for the input's default; the watch then uses the baseline's 5 runs.
+    const inputs = { "fail-on": "none", prompts: "tests/golden.jsonl", baseline: "tests/golden.baseline.json", concurrency: "1", runs: "" };
+
+    const quiet = await runAction(files, inputs, steady);
+    expect(quiet.code).toBe(0);
+    expect(quiet.summary).toContain("AI model watch: no change");
+    expect(quiet.lines.at(-1)).toBe("AI Change Guard watch: 1 same, 0 changed, 0 broken");
+    expect(quiet.summary).toContain("| 1 | 0 | 0 | 0 |");
+
+    const loud = await runAction(files, inputs, async () => answer("Sure, here you go"));
+    expect(loud.code).toBe(1);
+    expect(loud.summary).toContain("AI model watch: change detected");
+    expect(loud.lines.at(-1)).toBe("::error::AI Change Guard watch: 0 same, 0 changed, 1 broken");
+  });
+
+  it("rejects mixing a watch with a model switch", async () => {
+    await expect(runAction({}, { prompts: "g.jsonl", baseline: "b.json", "old-model": "openai:a" })).rejects.toThrow(/watch of one model/);
+  });
+});

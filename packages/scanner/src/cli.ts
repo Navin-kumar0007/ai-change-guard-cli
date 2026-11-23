@@ -7,6 +7,13 @@ import { promisify } from "node:util";
 import { createClient, parseModelRef, withRetry } from "@ai-change-guard/llm";
 import {
   applyRepair,
+  createBaseline,
+  formatWatchMarkdown,
+  formatWatchText,
+  parseBaseline,
+  postSlack,
+  runWatch,
+  slackMessage,
   formatRepairMarkdown,
   formatRepairText,
   formatReplayMarkdown,
@@ -33,6 +40,8 @@ const USAGE = `Usage:
   ai-change-guard switch <folder> --from <model-id> --to <model-id> [--write]
   ai-change-guard import <log-file> --out golden.jsonl [--model <model-id>] [--limit N]
   ai-change-guard starter <folder> --model provider:model --out golden.jsonl [--count N]
+  ai-change-guard baseline --set golden.jsonl --model provider:model --out golden.baseline.json [--runs N]
+  ai-change-guard watch --set golden.jsonl --baseline golden.baseline.json [--runs N] [--slack-webhook-env NAME]
 
 Scan options:
   --json                      Print the report as JSON
@@ -61,6 +70,14 @@ realistic user messages for each; one call per prompt, on your own key):
   --out FILE                  Golden set to write (a new file)
   --count N                   Messages per system prompt (default 8)
   --max-prompts N             Use at most N system prompts (default 5)
+
+Baseline and watch (is the model you use still answering the same way?):
+  baseline                    Runs each prompt --runs times (default 5) and saves the answers; commit the file
+  watch                       Asks the same model again and compares with the baseline: exit code 1 when
+                              3 of 5 answers changed or broke, or the provider served another model
+  --slack-webhook-env NAME    Post an alert to the Slack incoming webhook in this environment variable
+  --max-calls N               Refuse to start above this many calls (default 500)
+  --concurrency N             Calls in flight at once (default 2; use 1 on free-tier keys)
 
 Switch options:
   --write                     Change the files (without it, only shows what would change)
@@ -191,6 +208,12 @@ async function switchCommand(args: string[]): Promise<number> {
   return 0;
 }
 
+function takeValue(args: string[], i: number, flag: string): string {
+  const v = args[i];
+  if (!v || v.startsWith("-")) throw new UsageError(`${flag} needs a value.`);
+  return v;
+}
+
 async function importCommand(args: string[]): Promise<number> {
   let file: string | undefined;
   let out: string | undefined;
@@ -241,11 +264,7 @@ async function starterCommand(args: string[]): Promise<number> {
   let maxPrompts = 5;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
-    const value = () => {
-      const v = args[++i];
-      if (!v || v.startsWith("-")) throw new UsageError(`${arg} needs a value.`);
-      return v;
-    };
+    const value = () => takeValue(args, ++i, arg);
     if (arg === "--out") out = value();
     else if (arg === "--model") model = value();
     else if (arg === "--count") count = positiveInt(value(), "--count");
@@ -298,6 +317,73 @@ async function starterCommand(args: string[]): Promise<number> {
   return 0;
 }
 
+
+async function baselineCommand(args: string[]): Promise<number> {
+  let set: string | undefined;
+  let model: string | undefined;
+  let out: string | undefined;
+  let runs = 5;
+  let maxCalls = 500;
+  let concurrency = 2;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--set") set = takeValue(args, ++i, arg);
+    else if (arg === "--model") model = takeValue(args, ++i, arg);
+    else if (arg === "--out") out = takeValue(args, ++i, arg);
+    else if (arg === "--runs") runs = positiveInt(takeValue(args, ++i, arg), arg);
+    else if (arg === "--max-calls") maxCalls = positiveInt(takeValue(args, ++i, arg), arg);
+    else if (arg === "--concurrency") concurrency = positiveInt(takeValue(args, ++i, arg), arg);
+    else throw new UsageError(`Unknown option: ${arg}`);
+  }
+  if (!set || !model || !out) throw new UsageError("baseline needs --set, --model and --out.");
+  parseModelRef(model);
+  const items = await loadGoldenSet(resolve(set));
+  console.error(`${items.length} prompts × ${runs} runs on ${model} = ${plannedCalls(items.length, runs, 1)} calls on your API key.`);
+  const baseline = await createBaseline({ items, model, runs, maxCalls, concurrency, client: withRetry(createClient()) });
+  await writeFile(resolve(out), JSON.stringify(baseline, null, 2) + "\n");
+  const failed = baseline.records.filter((r) => !r.response).length;
+  console.log(`Saved ${baseline.records.length - failed} answers for ${items.length} prompts to ${out}${failed ? ` (${failed} calls failed)` : ""}. Commit it next to the golden set.`);
+  return 0;
+}
+
+async function watchCommand(args: string[]): Promise<number> {
+  let set: string | undefined;
+  let baselinePath: string | undefined;
+  let runs: number | undefined;
+  let maxCalls = 500;
+  let slackEnv: string | undefined;
+  let concurrency = 2;
+  let format: "text" | "markdown" | "json" = "text";
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--set") set = takeValue(args, ++i, arg);
+    else if (arg === "--baseline") baselinePath = takeValue(args, ++i, arg);
+    else if (arg === "--runs") runs = positiveInt(takeValue(args, ++i, arg), arg);
+    else if (arg === "--max-calls") maxCalls = positiveInt(takeValue(args, ++i, arg), arg);
+    else if (arg === "--concurrency") concurrency = positiveInt(takeValue(args, ++i, arg), arg);
+    else if (arg === "--slack-webhook-env") slackEnv = takeValue(args, ++i, arg);
+    else if (arg === "--json") format = "json";
+    else if (arg === "--markdown") format = "markdown";
+    else throw new UsageError(`Unknown option: ${arg}`);
+  }
+  if (!set || !baselinePath) throw new UsageError("watch needs --set and --baseline.");
+  const webhook = slackEnv ? process.env[slackEnv] : undefined;
+  if (slackEnv && !webhook) throw new UsageError(`${slackEnv} is not set; put the Slack webhook URL in that environment variable.`);
+  const baseline = parseBaseline(await readFile(resolve(baselinePath), "utf8"));
+  const items = await loadGoldenSet(resolve(set));
+  const watch = await runWatch({ items, baseline, maxCalls, concurrency, client: withRetry(createClient()), ...(runs ? { runs } : {}) });
+  if (format === "json") console.log(JSON.stringify(watch, null, 2));
+  else if (format === "markdown") console.log(formatWatchMarkdown(watch));
+  else console.log(formatWatchText(watch));
+  if (watch.alert && webhook) {
+    await postSlack(webhook, slackMessage(watch)).then(
+      () => console.error("Alert posted to Slack."),
+      (error: unknown) => console.error(`Could not post to Slack: ${error instanceof Error ? error.message : String(error)}`),
+    );
+  }
+  return watch.alert ? 1 : 0;
+}
+
 class UsageError extends Error {}
 
 interface Options {
@@ -343,6 +429,8 @@ async function main(argv: string[]): Promise<number> {
   if (command === "switch") return switchCommand(rest);
   if (command === "import") return importCommand(rest);
   if (command === "starter") return starterCommand(rest);
+  if (command === "baseline") return baselineCommand(rest);
+  if (command === "watch") return watchCommand(rest);
   if (command !== "scan") throw new UsageError(command ? `Unknown command: ${command}` : "Missing command.");
 
   const options = parseArgs(rest);

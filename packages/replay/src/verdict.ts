@@ -77,7 +77,16 @@ function firstError(records: RunRecord[]): string {
   return records.find((r) => r.error)?.error ?? "no runs";
 }
 
-export function judgeItem(item: GoldenItem, records: RunRecord[]): ItemResult {
+export interface JudgeOptions {
+  /**
+   * Share of the new answers that must show a problem before it counts (default 0.4: 2 of 5).
+   * The nightly watch uses 0.6 (3 of 5) so a single odd answer never raises an alarm.
+   */
+  share?: number;
+}
+
+export function judgeItem(item: GoldenItem, records: RunRecord[], options: JudgeOptions = {}): ItemResult {
+  const share = options.share ?? 0.4;
   const oldRecords = records.filter((r) => r.itemId === item.id && r.side === "old");
   const newRecords = records.filter((r) => r.itemId === item.id && r.side === "new");
   const oldOk = oldRecords.flatMap((r) => (r.response ? [r.response] : []));
@@ -106,11 +115,11 @@ export function judgeItem(item: GoldenItem, records: RunRecord[]): ItemResult {
     return result;
   }
   const newErrors = newRecords.length - newOk.length;
-  if (newErrors >= atLeast(newRecords.length, 0.4)) {
+  if (newErrors >= atLeast(newRecords.length, share)) {
     add("calls-failing", "broken", `${newErrors} of ${newRecords.length} calls to the new model failed: ${firstError(newRecords)}`);
   }
 
-  const threshold = atLeast(newOk.length, 0.4);
+  const threshold = atLeast(newOk.length, share);
   const expect = item.expect;
 
   if (expect?.json || expect?.schema) {

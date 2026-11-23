@@ -18,3 +18,6 @@ export type { StarterOptions, StarterResult, StarterSource } from "./starter.js"
 export { runReplayJob } from "./job.js";
 export type { ReplayJob, ReplayJobResult } from "./job.js";
 export { ReplayCancelledError } from "./run.js";
+export { BASELINE_VERSION, createBaseline, formatWatchMarkdown, formatWatchText, itemHash, parseBaseline, postSlack, runWatch, slackMessage, WATCH_SHARE } from "./watch.js";
+export type { Baseline, BaselineOptions, WatchOptions, WatchReport } from "./watch.js";
+export type { JudgeOptions } from "./verdict.js";

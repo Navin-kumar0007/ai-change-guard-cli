@@ -1,5 +1,5 @@
 // action/src/main.ts
-import { appendFile } from "node:fs/promises";
+import { appendFile, readFile as readFile5 } from "node:fs/promises";
 import { relative as relative2, resolve, sep as sep2 } from "node:path";
 
 // packages/llm/dist/index.js
@@ -550,7 +550,8 @@ function missingRequiredArg(item, call) {
 function firstError(records) {
   return records.find((r) => r.error)?.error ?? "no runs";
 }
-function judgeItem(item, records) {
+function judgeItem(item, records, options = {}) {
+  const share = options.share ?? 0.4;
   const oldRecords = records.filter((r) => r.itemId === item.id && r.side === "old");
   const newRecords = records.filter((r) => r.itemId === item.id && r.side === "new");
   const oldOk = oldRecords.flatMap((r) => r.response ? [r.response] : []);
@@ -574,10 +575,10 @@ function judgeItem(item, records) {
     return result;
   }
   const newErrors = newRecords.length - newOk.length;
-  if (newErrors >= atLeast(newRecords.length, 0.4)) {
+  if (newErrors >= atLeast(newRecords.length, share)) {
     add("calls-failing", "broken", `${newErrors} of ${newRecords.length} calls to the new model failed: ${firstError(newRecords)}`);
   }
-  const threshold = atLeast(newOk.length, 0.4);
+  const threshold = atLeast(newOk.length, share);
   const expect = item.expect;
   if (expect?.json || expect?.schema) {
     const problem = (r) => {
@@ -665,7 +666,7 @@ function isReroute(requested, served) {
   return !b.startsWith(a) && !a.startsWith(b);
 }
 function buildReplayReport(items, records, options) {
-  const results = items.map((item) => judgeItem(item, records)).sort((a, b) => VERDICT_ORDER[a.verdict] - VERDICT_ORDER[b.verdict]);
+  const results = items.map((item) => judgeItem(item, records, options.judge)).sort((a, b) => VERDICT_ORDER[a.verdict] - VERDICT_ORDER[b.verdict]);
   const totals = { same: 0, changed: 0, broken: 0, error: 0 };
   for (const r of results)
     totals[r.verdict]++;
@@ -881,6 +882,135 @@ async function runReplayJob(job) {
   } catch (error) {
     return { report, records, repairSkipped: `Prompt Repair failed: ${error instanceof Error ? error.message : String(error)}` };
   }
+}
+
+// packages/replay/dist/watch.js
+import { createHash } from "node:crypto";
+var BASELINE_VERSION = 1;
+var MAX_TEXT = 32e3;
+var WATCH_SHARE = 0.6;
+function stable(value) {
+  if (Array.isArray(value))
+    return `[${value.map(stable).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+function itemHash(item) {
+  const request = { system: item.system, messages: item.messages, tools: item.tools, maxTokens: item.maxTokens, temperature: item.temperature, jsonMode: item.jsonMode };
+  return createHash("sha256").update(stable(request)).digest("hex").slice(0, 16);
+}
+function trimmed(response) {
+  return response.text.length > MAX_TEXT ? { ...response, text: response.text.slice(0, MAX_TEXT) } : response;
+}
+function parseBaseline(text) {
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error("The baseline file is not valid JSON.");
+  }
+  if (data?.version !== BASELINE_VERSION || typeof data.model !== "string" || !Array.isArray(data.records) || !Array.isArray(data.items)) {
+    throw new Error("This is not an AI Change Guard baseline file (or it was made by a newer version).");
+  }
+  return data;
+}
+async function runWatch(options) {
+  const { baseline } = options;
+  const known = new Map(baseline.items.map((i) => [i.id, i.hash]));
+  const watched = options.items.filter((i) => known.get(i.id) === itemHash(i));
+  const notInBaseline = options.items.filter((i) => known.get(i.id) !== itemHash(i)).map((i) => i.id);
+  if (watched.length === 0)
+    throw new Error("None of these prompts match the baseline. Make a new baseline for this golden set.");
+  const runs = options.runs ?? baseline.runs;
+  const live = await runReplay({
+    items: watched,
+    oldModel: baseline.model,
+    newModel: baseline.model,
+    runs,
+    client: options.client,
+    sides: ["new"],
+    ...options.concurrency ? { concurrency: options.concurrency } : {},
+    ...options.maxCalls ? { maxCalls: options.maxCalls } : {},
+    ...options.signal ? { signal: options.signal } : {},
+    ...options.onProgress ? { onProgress: options.onProgress } : {}
+  });
+  for (const r of live)
+    if (r.response)
+      r.response = trimmed(r.response);
+  const ids = new Set(watched.map((i) => i.id));
+  const stored = baseline.records.filter((r) => ids.has(r.itemId)).map((r) => ({ itemId: r.itemId, side: "old", run: r.run, ...r.response ? { response: r.response } : { error: r.error ?? "failed" } }));
+  const report = buildReplayReport(watched, [...stored, ...live], { oldModel: baseline.model, newModel: baseline.model, runs, judge: { share: WATCH_SHARE } });
+  const served = (records) => [...new Set(records.flatMap((r) => r.response?.servedModel ? [r.response.servedModel] : []))].sort();
+  const servedBefore = served(stored);
+  const servedNow = served(live);
+  const requested = modelName(baseline.model);
+  const isNew = (s) => !servedBefore.includes(s);
+  const reroutes = servedNow.filter((s) => isNew(s) && isReroute(requested, s)).map((s) => ({ requested, served: s }));
+  const snapshotChanged = servedBefore.length > 0 && servedNow.some(isNew);
+  const alert = report.totals.broken + report.totals.changed + report.totals.error > 0 || reroutes.length > 0 || snapshotChanged;
+  return { model: baseline.model, baselineCreatedAt: baseline.createdAt, report, reroutes, servedBefore, servedNow, snapshotChanged, notInBaseline, alert };
+}
+function headline(w) {
+  const t = w.report.totals;
+  const n = w.report.items.length;
+  if (!w.alert)
+    return `No change: ${n} prompt${n === 1 ? "" : "s"} on ${w.model} still answer like the baseline of ${w.baselineCreatedAt.slice(0, 10)}.`;
+  const parts = [];
+  if (t.broken)
+    parts.push(`${t.broken} broken`);
+  if (t.changed)
+    parts.push(`${t.changed} changed`);
+  if (t.error)
+    parts.push(`${t.error} could not be compared`);
+  if (w.reroutes.length)
+    parts.push(`rerouted to ${w.reroutes.map((r) => r.served).join(", ")}`);
+  if (w.snapshotChanged)
+    parts.push(`now served by ${w.servedNow.join(", ")} (was ${w.servedBefore.join(", ")})`);
+  return `${w.model} changed since the baseline of ${w.baselineCreatedAt.slice(0, 10)}: ${parts.join(", ")}.`;
+}
+function formatWatchMarkdown(w) {
+  const t = w.report.totals;
+  const lines = [
+    `## ${w.alert ? "AI model watch: change detected" : "AI model watch: no change"}`,
+    "",
+    headline(w),
+    "",
+    "| Same | Changed | Broken | Could not compare |",
+    "| ---: | ---: | ---: | ---: |",
+    `| ${t.same} | ${t.changed} | ${t.broken} | ${t.error} |`
+  ];
+  const changed = w.report.items.filter((i) => i.verdict !== "same");
+  if (changed.length) {
+    lines.push("", "| Prompt | Verdict | Why |", "| --- | --- | --- |");
+    for (const i of changed) {
+      const why = (i.reasons.map((r) => r.detail).join("; ") || i.error || "").replace(/\s+/g, " ").replace(/\|/g, "\\|");
+      lines.push(`| ${i.id.replace(/\|/g, "\\|")} | ${i.verdict} | ${why} |`);
+    }
+  }
+  if (w.servedNow.length)
+    lines.push("", `Served by: ${w.servedNow.join(", ")}${w.servedBefore.length ? ` (at baseline: ${w.servedBefore.join(", ")})` : ""}.`);
+  if (w.notInBaseline.length)
+    lines.push("", `Not watched (new or edited since the baseline): ${w.notInBaseline.join(", ")}.`);
+  return lines.join("\n");
+}
+function slackMessage(w, link) {
+  const ids = w.report.items.filter((i) => i.verdict === "broken" || i.verdict === "changed").map((i) => `${i.id} (${i.verdict})`);
+  const text = [`:rotating_light: ${headline(w)}`, ids.length ? `Prompts: ${ids.slice(0, 20).join(", ")}${ids.length > 20 ? ", \u2026" : ""}` : "", link ? `Details: ${link}` : ""].filter(Boolean).join("\n");
+  return { text };
+}
+async function postSlack(webhookUrl, message, fetchImpl = fetch) {
+  if (!/^https:\/\//.test(webhookUrl))
+    throw new Error("The Slack webhook must be an https URL.");
+  const res = await fetchImpl(webhookUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(message),
+    signal: AbortSignal.timeout(1e4)
+  });
+  if (!res.ok)
+    throw new Error(`Slack answered ${res.status}.`);
 }
 
 // packages/scanner/dist/detect.js
@@ -2045,7 +2175,7 @@ async function planSwitch(root, findings, from, to, opts = {}) {
 }
 
 // action/src/pr.ts
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 import { readFile as readFile4 } from "node:fs/promises";
 import { join as join3, posix } from "node:path";
 var GitHubError = class extends Error {
@@ -2135,7 +2265,7 @@ function permissionHint(error) {
   return error;
 }
 function gitBlobSha(content) {
-  return createHash("sha1").update(`blob ${content.length}\0`).update(content).digest("hex");
+  return createHash2("sha1").update(`blob ${content.length}\0`).update(content).digest("hex");
 }
 async function trackedOnly(input2) {
   const { api, repo, plan } = input2;
@@ -2303,6 +2433,34 @@ ${check.summary}`);
   const prompts = input("prompts", env);
   const oldModel = input("old-model", env);
   const newModel = input("new-model", env);
+  const baselinePath = input("baseline", env);
+  if (baselinePath) {
+    if (!prompts) throw new Error('A watch needs "prompts" (the golden set the baseline was made from).');
+    if (oldModel || newModel || openPr) throw new Error('"baseline" runs a watch of one model; leave out old-model, new-model and open-pr.');
+    const baseline = parseBaseline(await readFile5(resolve(workspace, baselinePath), "utf8"));
+    const items = await loadGoldenSet(resolve(workspace, prompts));
+    const runsInput = input("runs", env);
+    const watch = await runWatch({
+      items,
+      baseline,
+      client: client ?? withRetry(createClient({ env })),
+      concurrency: positive(input("concurrency", env) || "2", "concurrency"),
+      maxCalls: positive(input("max-calls", env) || "300", "max-calls"),
+      ...runsInput ? { runs: positive(runsInput, "runs") } : {}
+    });
+    await summary(formatWatchMarkdown(watch));
+    const runUrl = env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY && env.GITHUB_RUN_ID ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}` : void 0;
+    const webhook = input("slack-webhook", env);
+    if (watch.alert && webhook) {
+      await postSlack(webhook, slackMessage(watch, runUrl)).then(
+        () => log("AI Change Guard watch: alert posted to Slack"),
+        (error) => log(`::warning::AI Change Guard watch: could not post to Slack: ${error instanceof Error ? error.message : String(error)}`)
+      );
+    }
+    const t = watch.report.totals;
+    log(`${watch.alert ? "::error::" : ""}AI Change Guard watch: ${t.same} same, ${t.changed} changed, ${t.broken} broken${watch.reroutes.length ? `, rerouted to ${watch.reroutes.map((r) => r.served).join(", ")}` : ""}`);
+    return failed || watch.alert ? 1 : 0;
+  }
   if (openPr && !(prompts && oldModel && newModel)) {
     throw new Error('open-pr needs a replay as proof: set "prompts", "old-model" and "new-model".');
   }

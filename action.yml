@@ -21,8 +21,8 @@ inputs:
     description: Model to switch to, as provider:model (e.g. openai:gpt-6-luna).
     default: ""
   runs:
-    description: Runs per prompt on each model.
-    default: "3"
+    description: Runs per prompt on each model (default 3 for a replay; a watch uses the baseline's number).
+    default: ""
   concurrency:
     description: Calls in flight at once. Use 1 on free-tier keys.
     default: "2"
@@ -32,6 +32,12 @@ inputs:
   replay-fail-on:
     description: "Fail the step when a replayed prompt is: broken, changed, or none."
     default: broken
+  baseline:
+    description: "Watch mode: a baseline file made with `ai-change-guard baseline`. The same model is asked again and compared; the step fails when answers changed (3 of 5 runs) or the provider served another model."
+    default: ""
+  slack-webhook:
+    description: "Watch mode: a Slack incoming-webhook URL (pass it from a secret) to post an alert when something changed."
+    default: ""
   repair:
     description: "When the new model breaks a prompt's JSON format, try fixes on the new model and show the one that works (true or false). Extra calls count against max-calls."
     default: "false"
