@@ -662,6 +662,18 @@ var priceData = load("prices.json");
 var prices = priceData.prices;
 var priceChanges = priceData.changes;
 var tokenizers = priceData.tokenizers;
+var packageData = load("packages.json");
+var compromisedReleases = packageData.compromised;
+var aiNames = { npm: new Set(packageData.ai.npm.names), PyPI: new Set(packageData.ai.PyPI.names) };
+function aiPackageMatch(ecosystem, name) {
+  const rules = packageData.ai[ecosystem];
+  if (aiNames[ecosystem].has(name))
+    return "name";
+  return rules.prefixes.some((p) => name.startsWith(p)) ? "prefix" : void 0;
+}
+function findCompromised(ecosystem, name, version) {
+  return compromisedReleases.find((c) => c.ecosystem === ecosystem && c.name === name && c.versions.includes(version));
+}
 var defaultPlatform = {
   openai: "openai-api",
   anthropic: "anthropic-api",
@@ -1299,13 +1311,380 @@ function scanText(file, content, kind, apiRules) {
 
 // packages/scanner/dist/scan.js
 import { readFile as readFile2, stat } from "node:fs/promises";
+import { join as join2 } from "node:path";
+
+// packages/scanner/dist/deps.js
+import { basename } from "node:path";
+var LOCKFILES = /* @__PURE__ */ new Set(["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "poetry.lock", "uv.lock", "Pipfile.lock"]);
+function isLockfile(name) {
+  return LOCKFILES.has(basename(name));
+}
+function isDependencyFile(name) {
+  const base = basename(name);
+  return LOCKFILES.has(base) || base === "package.json" || /^requirements[\w.-]*\.txt$/i.test(base);
+}
+function normalizeName(ecosystem, name) {
+  return ecosystem === "PyPI" ? name.toLowerCase().replace(/[-_.]+/g, "-") : name;
+}
+var EXACT_VERSION = /^v?(\d+\.\d+(?:\.\d+)?(?:[-.+]?[0-9A-Za-z.]+)?)$/;
+var NOT_REGISTRY = /^(workspace:|file:|link:|portal:|git\+|git:|github:|gitlab:|bitbucket:|https?:)/;
+function fromPackageLock(content) {
+  const data = JSON.parse(content);
+  const out = [];
+  if (data.packages) {
+    for (const [path, info] of Object.entries(data.packages)) {
+      const at = path.lastIndexOf("node_modules/");
+      if (at < 0 || info.link)
+        continue;
+      const name = info.name ?? path.slice(at + "node_modules/".length);
+      if (name && info.version)
+        out.push({ name, version: info.version, needle: `"${path}"` });
+    }
+    return out;
+  }
+  const walk2 = (deps) => {
+    for (const [name, value] of Object.entries(deps ?? {})) {
+      const info = value;
+      if (info.version)
+        out.push({ name, version: info.version, needle: `"${name}"` });
+      walk2(info.dependencies);
+    }
+  };
+  walk2(data.dependencies);
+  return out;
+}
+function fromPackageJson(content) {
+  const data = JSON.parse(content);
+  const out = [];
+  for (const field of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
+    const deps = data[field];
+    if (!deps || typeof deps !== "object")
+      continue;
+    for (const [name, spec] of Object.entries(deps)) {
+      if (typeof spec !== "string" || NOT_REGISTRY.test(spec.trim()))
+        continue;
+      const alias = aliasTarget(spec.trim());
+      const exact = EXACT_VERSION.exec((alias ? alias.spec : spec.trim()).replace(/^=/, ""));
+      out.push({ name: alias?.name ?? name, ...exact ? { version: exact[1] } : {}, needle: `"${name}"` });
+    }
+  }
+  return out;
+}
+function aliasTarget(spec) {
+  if (!spec.startsWith("npm:"))
+    return void 0;
+  const rest = spec.slice(4);
+  if (!rest || /^[\d~^<>=*]/.test(rest))
+    return void 0;
+  const at = rest.indexOf("@", 1);
+  return at < 0 ? { name: rest, spec: "" } : { name: rest.slice(0, at), spec: rest.slice(at + 1) };
+}
+function fromPnpmLock(content) {
+  const out = [];
+  const re = /^ {2}['"]?\/?((?:@[^/@\s'"]+\/)?[^/@\s'"]+)[@/](\d[^\s:'"(_]*)/gm;
+  for (const m of content.matchAll(re))
+    out.push({ name: m[1], version: m[2], needle: m[0] });
+  return out;
+}
+function fromYarnLock(content) {
+  const out = [];
+  const lines = content.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const header = lines[i];
+    if (!header || header.startsWith(" ") || header.startsWith("#") || !header.endsWith(":"))
+      continue;
+    const first = header.replace(/:$/, "").split(",")[0].trim().replace(/^"|"$/g, "");
+    const at = first.indexOf("@", 1);
+    if (at < 1)
+      continue;
+    const rest = first.slice(at + 1);
+    const name = rest.startsWith("npm:") ? aliasTarget(rest)?.name ?? first.slice(0, at) : first.slice(0, at);
+    for (let j = i + 1; j < lines.length && lines[j].startsWith(" "); j++) {
+      const v = /^\s+version:?\s+"?([^"\s]+)"?/.exec(lines[j]);
+      if (v) {
+        out.push({ name, version: v[1], needle: header });
+        break;
+      }
+    }
+  }
+  return out;
+}
+var LOCAL_SOURCE = /^source\s*=\s*\{[^}]*\b(editable|virtual|directory|path|git)\s*=|^\[package\.source\][^[]*?^type\s*=\s*"(directory|file|git|url)"/ms;
+var OTHER_INDEX = /^source\s*=\s*\{\s*registry\s*=\s*"(?!https:\/\/pypi\.org\/)/m;
+function fromTomlLock(content) {
+  const out = [];
+  for (const block of content.split(/^\[\[package\]\]\s*$/m).slice(1)) {
+    if (LOCAL_SOURCE.test(block))
+      continue;
+    const name = /^name\s*=\s*"([^"]+)"/m.exec(block)?.[1];
+    const version = /^version\s*=\s*"([^"]+)"/m.exec(block)?.[1];
+    if (name)
+      out.push({ name, ...version ? { version } : {}, needle: `name = "${name}"`, ...OTHER_INDEX.test(block) ? { privateIndex: true } : {} });
+  }
+  return out;
+}
+function fromPipfileLock(content) {
+  const data = JSON.parse(content);
+  const out = [];
+  for (const section of ["default", "develop"]) {
+    for (const [name, info] of Object.entries(data[section] ?? {})) {
+      const version = info?.version?.replace(/^==/, "");
+      out.push({ name, ...version ? { version } : {}, needle: `"${name}"` });
+    }
+  }
+  return out;
+}
+function fromRequirements(content) {
+  const out = [];
+  const privateIndex = /^\s*(--index-url|--extra-index-url|-i\s)/m.test(content);
+  for (const raw of content.split("\n")) {
+    const line = raw.replace(/\s+#.*$/, "").trim();
+    if (!line || line.startsWith("#") || line.startsWith("-"))
+      continue;
+    const m = /^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*(?:===?\s*([^\s;,]+))?/.exec(line);
+    if (m)
+      out.push({ name: m[1], ...m[2] && !m[2].includes("*") ? { version: m[2] } : {}, needle: raw, ...privateIndex ? { privateIndex } : {} });
+  }
+  return out;
+}
+function parseDependencies(file, text) {
+  const base = basename(file);
+  const content = text.replace(/\r\n?/g, "\n");
+  let ecosystem;
+  let raw;
+  try {
+    if (base === "package-lock.json" || base === "npm-shrinkwrap.json")
+      [ecosystem, raw] = ["npm", fromPackageLock(content)];
+    else if (base === "package.json")
+      [ecosystem, raw] = ["npm", fromPackageJson(content)];
+    else if (base === "pnpm-lock.yaml")
+      [ecosystem, raw] = ["npm", fromPnpmLock(content)];
+    else if (base === "yarn.lock")
+      [ecosystem, raw] = ["npm", fromYarnLock(content)];
+    else if (base === "poetry.lock" || base === "uv.lock")
+      [ecosystem, raw] = ["PyPI", fromTomlLock(content)];
+    else if (base === "Pipfile.lock")
+      [ecosystem, raw] = ["PyPI", fromPipfileLock(content)];
+    else if (/^requirements[\w.-]*\.txt$/i.test(base))
+      [ecosystem, raw] = ["PyPI", fromRequirements(content)];
+    else
+      return [];
+  } catch {
+    return [];
+  }
+  return raw.map((r) => ({
+    ecosystem,
+    name: normalizeName(ecosystem, r.name),
+    ...r.version ? { version: r.version } : {},
+    file,
+    needle: r.needle,
+    ...r.privateIndex ? { privateIndex: r.privateIndex } : {}
+  }));
+}
+function ownPackageName(file, content) {
+  if (basename(file) !== "package.json")
+    return void 0;
+  try {
+    const name = JSON.parse(content).name;
+    return typeof name === "string" ? name : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function privateRegistries(npmrc) {
+  const all = /^\s*registry\s*=/m.test(npmrc);
+  const scopes = [...npmrc.matchAll(/^\s*(@[^:\s]+):registry\s*=/gm)].map((m) => m[1]);
+  return { all, scopes };
+}
+function lineOf(content, needle) {
+  const at = content.indexOf(needle);
+  if (at < 0)
+    return 1;
+  let line = 1;
+  for (let i = content.indexOf("\n"); i >= 0 && i < at; i = content.indexOf("\n", i + 1))
+    line++;
+  return line;
+}
+
+// packages/scanner/dist/packages.js
+var AI_LOOKING = /(openai|anthropic|claude|gemini|gpt|llm|langchain|langgraph|llama|mistral|ollama|genai|mcp|agent|copilot|huggingface)/i;
+function looksLikeAiPackage(name) {
+  return AI_LOOKING.test(name);
+}
+function isAiRelated(ecosystem, name) {
+  return aiPackageMatch(ecosystem, name) !== void 0 || looksLikeAiPackage(name);
+}
+function aiPackagesOf(deps) {
+  const byName = /* @__PURE__ */ new Map();
+  for (const d of deps) {
+    if (!isAiRelated(d.ecosystem, d.name))
+      continue;
+    const known = aiPackageMatch(d.ecosystem, d.name) === "name";
+    const key = `${d.ecosystem}|${d.name}`;
+    const pkg = byName.get(key) ?? { ecosystem: d.ecosystem, name: d.name, versions: [], known, locations: [] };
+    if (d.version && !pkg.versions.includes(d.version))
+      pkg.versions.push(d.version);
+    if (d.privateIndex)
+      pkg.privateIndex = true;
+    const location = `${d.file}:${d.line}`;
+    if (!pkg.locations.includes(location))
+      pkg.locations.push(location);
+    byName.set(key, pkg);
+  }
+  return [...byName.values()].sort((a, b) => a.ecosystem.localeCompare(b.ecosystem) || a.name.localeCompare(b.name));
+}
+function compromisedRow(pkg, version, release) {
+  return {
+    ecosystem: pkg.ecosystem,
+    name: pkg.name,
+    version,
+    issue: "compromised",
+    advisory: release.advisory,
+    summary: release.summary,
+    url: release.sources[0]?.url ?? `https://osv.dev/vulnerability/${release.advisory}`,
+    date: release.published,
+    source: "catalog",
+    locations: pkg.locations
+  };
+}
+function checkPackagesOffline(packages) {
+  const rows = [];
+  for (const pkg of packages) {
+    for (const version of pkg.versions) {
+      const release = findCompromised(pkg.ecosystem, pkg.name, version);
+      if (release)
+        rows.push(compromisedRow(pkg, version, release));
+    }
+  }
+  return rows;
+}
+var DAY_MS = 864e5;
+async function getJson(fetchFn, url, timeoutMs, init) {
+  const res = await fetchFn(url, { ...init, signal: AbortSignal.timeout(timeoutMs), headers: { Accept: "application/json", ...init?.body ? { "Content-Type": "application/json" } : {} } });
+  if (res.status === 404)
+    return { status: 404 };
+  if (!res.ok)
+    throw new Error(`HTTP ${res.status} from ${new URL(url).host}`);
+  return { status: res.status, body: await res.json() };
+}
+async function firstPublished(fetchFn, pkg, timeoutMs) {
+  if (pkg.ecosystem === "npm") {
+    const r2 = await getJson(fetchFn, `https://registry.npmjs.org/${pkg.name.replace("/", "%2F")}`, timeoutMs);
+    if (r2.status === 404)
+      return "missing";
+    const created = r2.body?.time?.created;
+    return typeof created === "string" ? created : void 0;
+  }
+  const r = await getJson(fetchFn, `https://pypi.org/pypi/${encodeURIComponent(pkg.name)}/json`, timeoutMs);
+  if (r.status === 404)
+    return "missing";
+  const releases = r.body?.releases ?? {};
+  const times = Object.values(releases).flatMap((files) => files.map((f) => f.upload_time_iso_8601).filter((t) => typeof t === "string"));
+  return times.sort()[0];
+}
+async function checkPackagesOnline(packages, options) {
+  const fetchFn = options.fetch ?? fetch;
+  const timeoutMs = options.timeoutMs ?? 1e4;
+  const rows = [];
+  let failed = 0;
+  const queries = packages.flatMap((pkg) => pkg.versions.map((version) => ({ pkg, version })));
+  if (queries.length > 0) {
+    try {
+      const batch = await getJson(fetchFn, "https://api.osv.dev/v1/querybatch", timeoutMs, {
+        method: "POST",
+        body: JSON.stringify({ queries: queries.map((q) => ({ package: { name: q.pkg.name, ecosystem: q.pkg.ecosystem }, version: q.version })) })
+      });
+      const results = batch.body?.results;
+      if (!results)
+        throw new Error("OSV answered without results");
+      for (let i = 0; i < queries.length; i++) {
+        const { pkg, version } = queries[i];
+        if (findCompromised(pkg.ecosystem, pkg.name, version))
+          continue;
+        const malicious = (results[i]?.vulns ?? []).filter((v) => v.id.startsWith("MAL-"));
+        for (const v of malicious) {
+          const detail = await getJson(fetchFn, `https://api.osv.dev/v1/vulns/${encodeURIComponent(v.id)}`, timeoutMs).catch(() => ({ status: 0 }));
+          const vuln = detail.body;
+          rows.push({
+            ecosystem: pkg.ecosystem,
+            name: pkg.name,
+            version,
+            issue: "compromised",
+            advisory: v.id,
+            summary: vuln?.summary ?? `Malicious code in ${pkg.name} ${version}.`,
+            url: `https://osv.dev/vulnerability/${v.id}`,
+            ...vuln?.published ? { date: vuln.published.slice(0, 10) } : {},
+            source: "osv",
+            locations: pkg.locations
+          });
+        }
+      }
+    } catch {
+      failed++;
+    }
+  }
+  const newDays = options.newDays ?? 30;
+  const unknown = packages.filter((p) => !p.known).slice(0, options.maxLookups ?? 30);
+  const todayMs = Date.parse(`${options.today}T00:00:00Z`);
+  for (let i = 0; i < unknown.length; i += 5) {
+    await Promise.all(unknown.slice(i, i + 5).map(async (pkg) => {
+      let first;
+      try {
+        first = await firstPublished(fetchFn, pkg, timeoutMs);
+      } catch {
+        failed++;
+        return;
+      }
+      const scope = pkg.ecosystem === "npm" && pkg.name.startsWith("@") ? pkg.name.split("/")[0] + "/" : void 0;
+      const mayBePrivate = pkg.privateIndex || scope !== void 0 && aiPackageMatch("npm", pkg.name) !== "prefix";
+      if (first === "missing" && !mayBePrivate) {
+        rows.push({
+          ecosystem: pkg.ecosystem,
+          name: pkg.name,
+          issue: "not-found",
+          // Only a scope's owner can publish under it; an unscoped name is open to anyone.
+          summary: `${pkg.name} is not on ${pkg.ecosystem === "npm" ? "npm" : "PyPI"}. If an AI assistant suggested it, the name may be invented${scope ? "" : ", and anyone could publish a package under it"}.`,
+          source: "registry",
+          locations: pkg.locations
+        });
+      } else if (first && todayMs - Date.parse(first) < newDays * DAY_MS) {
+        const date = first.slice(0, 10);
+        rows.push({
+          ecosystem: pkg.ecosystem,
+          name: pkg.name,
+          issue: "new-package",
+          summary: `${pkg.name} was first published on ${date}. A brand-new package with an AI-sounding name can be a fake; check its source and owner before installing.`,
+          date,
+          source: "registry",
+          locations: pkg.locations
+        });
+      }
+    }));
+  }
+  return { rows, failed };
+}
+var ISSUE_ORDER = { compromised: 0, "not-found": 1, "new-package": 2 };
+function sortPackageRows(rows) {
+  return [...rows].sort((a, b) => ISSUE_ORDER[a.issue] - ISSUE_ORDER[b.issue] || a.name.localeCompare(b.name));
+}
+function describePackage(row) {
+  const what = `${row.name}${row.version ? ` ${row.version}` : ""} (${row.ecosystem})`;
+  if (row.issue === "compromised")
+    return `${what}: release published with malicious code [${row.advisory}]. ${row.summary}`;
+  return `${what}: ${row.summary}`;
+}
+var PACKAGE_FIX = {
+  compromised: "Remove this version and install a clean one. Treat any machine or CI runner that installed it as compromised: rotate every key and token it could read, from a different machine.",
+  "not-found": "Check the name against the provider's official docs; remove it or replace it with the real package.",
+  "new-package": "Confirm the package's source repository and owner before installing; prefer the provider's official SDK."
+};
 
 // packages/scanner/dist/security.js
-import { basename as basename2 } from "node:path";
+import { basename as basename3 } from "node:path";
 
 // packages/scanner/dist/walk.js
 import { readdir } from "node:fs/promises";
-import { basename, extname, join, relative, sep } from "node:path";
+import { basename as basename2, extname, join, relative, sep } from "node:path";
 var SKIP_DIRS = /* @__PURE__ */ new Set([
   "node_modules",
   ".git",
@@ -1327,12 +1706,6 @@ var SKIP_DIRS = /* @__PURE__ */ new Set([
   ".cache"
 ]);
 var SKIP_FILES = /* @__PURE__ */ new Set([
-  "package-lock.json",
-  "yarn.lock",
-  "pnpm-lock.yaml",
-  "poetry.lock",
-  "Pipfile.lock",
-  "uv.lock",
   "Cargo.lock",
   "go.sum",
   "composer.lock",
@@ -1358,7 +1731,7 @@ var CODE_EXTENSIONS = /* @__PURE__ */ new Set([
 ]);
 var CONFIG_EXTENSIONS = /* @__PURE__ */ new Set([".yaml", ".yml", ".json", ".toml", ".ini", ".properties", ".cfg"]);
 function fileKind(name) {
-  const base = basename(name);
+  const base = basename2(name);
   if (base === ".env" || base.startsWith(".env."))
     return "config";
   if (/^requirements[\w.-]*\.txt$/i.test(base))
@@ -1394,6 +1767,10 @@ async function* walk(root) {
       }
       if (!entry.isFile() || SKIP_FILES.has(entry.name))
         continue;
+      if (isLockfile(entry.name)) {
+        yield { path: full, rel: relative(root, full).split(sep).join("/"), kind: "config", lock: true };
+        continue;
+      }
       const kind = fileKind(entry.name);
       if (kind)
         yield { path: full, rel: relative(root, full).split(sep).join("/"), kind };
@@ -1584,9 +1961,9 @@ var PLACEHOLDER_RE = /x{6,}|0{8,}|\.\.\.|your|example|placeholder|dummy|fake|red
 var PUBLIC_ENV_RE = /\b(?:NEXT_PUBLIC|VITE|REACT_APP|EXPO_PUBLIC|NUXT_PUBLIC|GATSBY|PUBLIC)_[A-Z0-9_]*(?:OPENAI|ANTHROPIC|CLAUDE|GEMINI|GOOGLE_AI|GENAI|GROQ|MISTRAL|OPENROUTER|XAI|DEEPSEEK|COHERE|PERPLEXITY)[A-Z0-9_]*(?:KEY|TOKEN|SECRET)\b/;
 var BROWSER_FLAG_RE = /\bdangerouslyAllowBrowser\s*:\s*true\b/;
 function isLocalEnvFile(file) {
-  return /^\.env(?:\.[\w-]+)?\.local$/.test(basename2(file).toLowerCase());
+  return /^\.env(?:\.[\w-]+)?\.local$/.test(basename3(file).toLowerCase());
 }
-var isEnvFile = (file) => /^\.env(?:\.[\w-]+)*$/.test(basename2(file).toLowerCase());
+var isEnvFile = (file) => /^\.env(?:\.[\w-]+)*$/.test(basename3(file).toLowerCase());
 function looksReal(key) {
   if (PLACEHOLDER_RE.test(key))
     return false;
@@ -1637,7 +2014,7 @@ var RUNNERS = /* @__PURE__ */ new Set(["npx", "bunx", "uvx", "pnpx"]);
 var FLAGS_WITH_VALUE = /* @__PURE__ */ new Set(["--python", "-p", "--with", "--package", "--index-url", "--registry", "--cache", "-c", "--call"]);
 function packageSpec(rawCommand, rawArgs) {
   const [first = "", ...inline] = rawCommand.trim().split(/\s+/);
-  const command = basename2(first.replace(/\\/g, "/")).replace(/\.(?:cmd|exe|ps1)$/i, "").toLowerCase();
+  const command = basename3(first.replace(/\\/g, "/")).replace(/\.(?:cmd|exe|ps1)$/i, "").toLowerCase();
   let rest = [...inline, ...rawArgs];
   if (command === "pnpm" && rest[0] === "dlx")
     rest = rest.slice(1);
@@ -1664,7 +2041,7 @@ function packageSpec(rawCommand, rawArgs) {
   const version = /^@?[^@\s]+@(.+)$/.exec(spec)?.[1] ?? /==([^,\s]+)$/.exec(spec)?.[1];
   return { spec, pinned: Boolean(version && /^\d+\.\d+\.\d+[\w.+-]*$/.test(version)) };
 }
-function lineOf(lines, needle) {
+function lineOf2(lines, needle) {
   const i = lines.findIndex((l) => l.includes(needle));
   return i >= 0 ? i + 1 : 1;
 }
@@ -1712,10 +2089,10 @@ function mcpFindings(file, content, lines) {
     if (typeof s?.command !== "string")
       continue;
     const args = Array.isArray(s.args) ? s.args.filter((a) => typeof a === "string") : [];
-    const parsed = packageSpec(basename2(s.command), args);
+    const parsed = packageSpec(basename3(s.command), args);
     if (!parsed || parsed.pinned)
       continue;
-    out.push({ file, line: lineOf(lines, parsed.spec), rule: "unpinned-mcp-server", detail: `${name}: ${parsed.spec}` });
+    out.push({ file, line: lineOf2(lines, parsed.spec), rule: "unpinned-mcp-server", detail: `${name}: ${parsed.spec}` });
   }
   return out;
 }
@@ -1731,7 +2108,7 @@ function findSecurityIssues(file, content, kind) {
         for (const m of line.matchAll(re)) {
           if (!looksReal(m[0]))
             continue;
-          add(i, "ai-key-exposed", isEnvFile(file) ? `${provider} key ${mask(m[0])} in ${basename2(file)}: exposed if this file is committed (keep it git-ignored)` : `${provider} key ${mask(m[0])} written in the file`);
+          add(i, "ai-key-exposed", isEnvFile(file) ? `${provider} key ${mask(m[0])} in ${basename3(file)}: exposed if this file is committed (keep it git-ignored)` : `${provider} key ${mask(m[0])} written in the file`);
         }
       }
     }
@@ -1925,18 +2302,31 @@ function findTokenTips(file, content, kind) {
 
 // packages/scanner/dist/scan.js
 var MAX_FILE_BYTES = 1e6;
+var MAX_LOCKFILE_BYTES = 3e7;
 async function scanDirectory(root) {
   const info = await stat(root).catch(() => null);
   if (!info?.isDirectory())
     throw new Error(`Not a folder: ${root}`);
   const rules = compileApiRules(apis);
-  const result = { root, filesScanned: 0, aiFiles: 0, callSites: 0, findings: [], tokenTips: [], security: [] };
+  const result = { root, filesScanned: 0, aiFiles: 0, callSites: 0, findings: [], tokenTips: [], security: [], dependencies: [] };
+  const ownPackages = /* @__PURE__ */ new Set();
   for await (const file of walk(root)) {
     const size = (await stat(file.path)).size;
-    if (size > MAX_FILE_BYTES)
+    if (size > (file.lock ? MAX_LOCKFILE_BYTES : MAX_FILE_BYTES))
       continue;
     const content = await readFile2(file.path, "utf8");
     if (content.includes("\0"))
+      continue;
+    const own = ownPackageName(file.rel, content);
+    if (own)
+      ownPackages.add(own);
+    if (isDependencyFile(file.rel)) {
+      for (const { needle, ...dep } of parseDependencies(file.rel, content)) {
+        if (isAiRelated(dep.ecosystem, dep.name))
+          result.dependencies.push({ ...dep, line: lineOf(content, needle) });
+      }
+    }
+    if (file.lock)
       continue;
     const scanned = scanText(file.rel, content, file.kind, rules);
     result.filesScanned++;
@@ -1947,6 +2337,13 @@ async function scanDirectory(root) {
     if (scanned.isAiFile)
       result.tokenTips.push(...findTokenTips(file.rel, content, file.kind));
     result.security.push(...findSecurityIssues(file.rel, content, file.kind));
+  }
+  result.dependencies = result.dependencies.filter((d) => !(d.ecosystem === "npm" && ownPackages.has(d.name)));
+  const npmrc = await readFile2(join2(root, ".npmrc"), "utf8").catch(() => "");
+  const registries = privateRegistries(npmrc);
+  for (const d of result.dependencies) {
+    if (d.ecosystem === "npm" && (registries.all || registries.scopes.some((s) => d.name.startsWith(`${s}/`))))
+      d.privateIndex = true;
   }
   return result;
 }
@@ -2177,6 +2574,7 @@ function buildReport(result, target, today) {
   }
   const security = [...securityRows.values()].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || b.findings.length - a.findings.length);
   const costs = costRowsFor(models2, today);
+  const aiPackages = aiPackagesOf(result.dependencies ?? []);
   return {
     target,
     today,
@@ -2188,8 +2586,14 @@ function buildReport(result, target, today) {
     apis: apiRows,
     tokenTips,
     security,
-    costs
+    costs,
+    aiPackages,
+    packages: sortPackageRows(checkPackagesOffline(aiPackages))
   };
+}
+async function addOnlinePackageChecks(report, options) {
+  const { rows, failed } = await checkPackagesOnline(report.aiPackages ?? [], options);
+  return { ...report, packages: sortPackageRows([...report.packages ?? [], ...rows]), packagesOnline: { checked: true, failed } };
 }
 
 // packages/scanner/dist/check.js
@@ -2217,19 +2621,27 @@ function buildCheck(report, changedFiles) {
   const introducedDead = dead.some((m) => inChangedFiles(m.locations, changed)) || deadApis.some((a) => inChangedFiles(a.locations, changed));
   const keyRow = report.security?.find((s) => s.rule === "ai-key-exposed");
   const introducedKey = Boolean(keyRow && inChangedFiles(keyRow.findings.map((f) => f.location), changed));
-  const conclusion = introducedDead || introducedKey ? "failure" : dead.length + deadApis.length + soon.length + soonApis.length > 0 ? "neutral" : "success";
+  const compromised = (report.packages ?? []).filter((p) => p.issue === "compromised");
+  const introducedPackage = compromised.some((p) => inChangedFiles(p.locations, changed));
+  const conclusion = introducedDead || introducedKey || introducedPackage ? "failure" : compromised.length > 0 ? "neutral" : dead.length + deadApis.length + soon.length + soonApis.length > 0 ? "neutral" : "success";
   const parts = [];
   if (dead.length + deadApis.length > 0)
     parts.push(`${dead.length + deadApis.length} retired`);
   if (soon.length + soonApis.length > 0)
     parts.push(`${soon.length + soonApis.length} changing within ${SOON_DAYS} days`);
   const modelTitle = parts.length > 0 ? `AI models and APIs: ${parts.join(", ")}` : `${report.models.length} AI models found, none changing soon`;
-  const title = introducedKey ? `AI API key exposed in this pull request \xB7 ${modelTitle}` : modelTitle;
+  const title = introducedKey ? `AI API key exposed in this pull request \xB7 ${modelTitle}` : compromised.length > 0 ? `Malicious AI package release installed \xB7 ${modelTitle}` : modelTitle;
   const lines = [];
   if (introducedKey)
     lines.push("**This pull request adds or touches a file with an exposed AI API key. Revoke the key and move it to a server-side secret.**", "");
   if (introducedDead)
     lines.push("**This pull request touches code that uses a retired AI model or API.**", "");
+  if (compromised.length > 0) {
+    lines.push(`**${introducedPackage ? "This pull request installs" : "This repository installs"} an AI package release that was published with malicious code.** ${PACKAGE_FIX.compromised}`);
+    for (const p of compromised)
+      lines.push(`- ${describePackage(p)} (${p.locations.slice(0, 3).map((l) => `\`${l}\``).join(", ")})${p.url ? ` [advisory](${p.url})` : ""}`);
+    lines.push("");
+  }
   const rows = [...dead, ...soon];
   if (rows.length > 0) {
     const prColumn = changedFiles !== null;
@@ -2257,6 +2669,12 @@ function buildCheck(report, changedFiles) {
       lines.push(`- ${s.severity === "high" ? "**High:** " : ""}${s.title} [${s.owasp}]: ${where}. ${s.fix}`);
     }
   }
+  const otherPackages = (report.packages ?? []).filter((p) => p.issue !== "compromised");
+  if (otherPackages.length > 0) {
+    lines.push("", "**AI packages to review** (advisory):");
+    for (const p of otherPackages)
+      lines.push(`- ${describePackage(p)}`);
+  }
   if (report.tokenTips.length > 0) {
     lines.push("", "**Token Saver:** " + report.tokenTips.map((t) => `${t.title} (${t.locations.length})`).join(" \xB7 "));
   }
@@ -2266,7 +2684,7 @@ function buildCheck(report, changedFiles) {
 
 // packages/scanner/dist/switch.js
 import { readFile as readFile3, writeFile } from "node:fs/promises";
-import { join as join2 } from "node:path";
+import { join as join3 } from "node:path";
 var MODEL_ID_RE = /^[A-Za-z0-9][\w.\-:@]{0,119}$/;
 var ID_CHAR_BEFORE = /[\w.\-@]/;
 var ID_CHAR_AFTER = /[\w.\-/:@]/;
@@ -2343,7 +2761,7 @@ async function planSwitch(root, findings, from, to, opts = {}) {
     const kind = fileKind(file);
     if (!kind)
       continue;
-    const lines = (await readFile3(join2(root, file), "utf8")).split("\n");
+    const lines = (await readFile3(join3(root, file), "utf8")).split("\n");
     let changed = false;
     for (const [lineNo, lineFindings] of uses) {
       const original = lines[lineNo - 1];
@@ -2378,7 +2796,7 @@ async function planSwitch(root, findings, from, to, opts = {}) {
 // action/src/pr.ts
 import { createHash as createHash2 } from "node:crypto";
 import { readFile as readFile4 } from "node:fs/promises";
-import { join as join3, posix } from "node:path";
+import { join as join4, posix } from "node:path";
 var GitHubError = class extends Error {
   constructor(status, message) {
     super(message);
@@ -2481,7 +2899,7 @@ async function trackedOnly(input2) {
   for (const [file, content] of plan.files) {
     const path = posix.join(input2.scanPath || ".", file);
     const entry = tracked.get(path);
-    const reason = !entry ? "Not committed in the repository (untracked or gitignored), so it is left out of the PR." : gitBlobSha(await readFile4(join3(input2.workspace, path))) !== entry.sha ? "Changed by an earlier step of this job, so it is left out of the PR." : null;
+    const reason = !entry ? "Not committed in the repository (untracked or gitignored), so it is left out of the PR." : gitBlobSha(await readFile4(join4(input2.workspace, path))) !== entry.sha ? "Changed by an earlier step of this job, so it is left out of the PR." : null;
     const edits = plan.edits.filter((e) => e.file === file);
     if (reason) {
       keep.skipped.push(...edits.map((e) => ({ file, line: e.line, raw: plan.from, reason })));
@@ -2595,6 +3013,7 @@ function oneOf(value, name, allowed) {
 }
 function scanFails(report, failOn) {
   if (failOn === "none") return false;
+  if (report.packages?.some((p) => p.issue === "compromised")) return true;
   const retired = report.models.some((m) => m.status === "retired" || m.status === "rerouted") || report.apis.some((a) => a.daysLeft <= 0);
   if (failOn === "retired") return retired;
   const soon = report.models.some((m) => (m.status === "retiring" || m.status === "rerouting") && (m.daysLeft ?? Infinity) <= SOON_DAYS2) || report.apis.some((a) => a.daysLeft > 0 && a.daysLeft <= SOON_DAYS2);
@@ -2624,7 +3043,10 @@ async function run({ env, today, log, client, github }) {
   const openPr = oneOf(input("open-pr", env) || "false", "open-pr", ["true", "false"]) === "true";
   const scanRoot = resolve(workspace, input("path", env) || ".");
   const scan = await scanDirectory(scanRoot);
-  const report = buildReport(scan, env.GITHUB_REPOSITORY ?? workspace, today);
+  let report = buildReport(scan, env.GITHUB_REPOSITORY ?? workspace, today);
+  if (oneOf(input("online-package-check", env) || "false", "online-package-check", ["true", "false"]) === "true") {
+    report = await addOnlinePackageChecks(report, { today });
+  }
   const check = buildCheck(report, null);
   await summary(`## AI Change Guard: ${check.title}
 

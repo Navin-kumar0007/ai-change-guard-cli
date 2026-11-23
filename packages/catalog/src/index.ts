@@ -98,6 +98,45 @@ export const prices: readonly PriceEntry[] = priceData.prices;
 export const priceChanges: readonly PriceChange[] = priceData.changes;
 export const tokenizers: readonly TokenizerEntry[] = priceData.tokenizers;
 
+export type PackageEcosystem = "npm" | "PyPI";
+
+/** Releases of an AI package that were published with malicious code. */
+export interface CompromisedRelease {
+  ecosystem: PackageEcosystem;
+  /** npm name, or the normalized PyPI name (lowercase, runs of "-", "_", "." as "-"). */
+  name: string;
+  versions: string[];
+  advisory: string;
+  aliases: string[];
+  published: string;
+  summary: string;
+  sources: Source[];
+}
+
+const packageData = load<{ ai: Record<PackageEcosystem, { names: string[]; prefixes: string[] }>; compromised: CompromisedRelease[] }>("packages.json");
+export const compromisedReleases: readonly CompromisedRelease[] = packageData.compromised;
+const aiNames: Record<PackageEcosystem, Set<string>> = { npm: new Set(packageData.ai.npm.names), PyPI: new Set(packageData.ai.PyPI.names) };
+
+/**
+ * How the catalog knows this package as an AI package (SDK, agent framework, MCP, vector store): "name" for a
+ * listed package, "prefix" for one in a listed family (e.g. langchain-*), which says nothing about whether it
+ * is real. Undefined when it is not an AI package.
+ */
+export function aiPackageMatch(ecosystem: PackageEcosystem, name: string): "name" | "prefix" | undefined {
+  const rules = packageData.ai[ecosystem];
+  if (aiNames[ecosystem].has(name)) return "name";
+  return rules.prefixes.some((p) => name.startsWith(p)) ? "prefix" : undefined;
+}
+
+export function isAiPackage(ecosystem: PackageEcosystem, name: string): boolean {
+  return aiPackageMatch(ecosystem, name) !== undefined;
+}
+
+/** The compromised release this exact version belongs to, if any. */
+export function findCompromised(ecosystem: PackageEcosystem, name: string, version: string): CompromisedRelease | undefined {
+  return compromisedReleases.find((c) => c.ecosystem === ecosystem && c.name === name && c.versions.includes(version));
+}
+
 export const defaultPlatform: Record<Provider, Platform> = {
   openai: "openai-api",
   anthropic: "anthropic-api",

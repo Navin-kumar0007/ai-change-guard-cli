@@ -1,0 +1,307 @@
+{
+ "$comment": "AI packages (SDKs, agent frameworks, MCP) and releases of them that were published with malicious code, from OSV (osv.dev, which merges GitHub, PyPI and OpenSSF malicious-package advisories). Versions are exact releases; anything that depends on one of them should treat the machine that installed it as compromised. 'ai' lists names and name prefixes that count as AI packages; it decides what the guard checks, not whether a package is safe.",
+ "ai": {
+  "npm": {
+   "names": [
+    "openai",
+    "ai",
+    "langchain",
+    "llamaindex",
+    "ollama",
+    "groq-sdk",
+    "cohere-ai",
+    "mastra",
+    "litellm",
+    "together-ai",
+    "replicate",
+    "@pinecone-database/pinecone",
+    "chromadb",
+    "weaviate-client",
+    "@qdrant/js-client-rest",
+    "langfuse",
+    "@vercel/ai",
+    "genkit"
+   ],
+   "prefixes": [
+    "@anthropic-ai/",
+    "@openai/",
+    "@google/genai",
+    "@google/generative-ai",
+    "@google-cloud/vertexai",
+    "@langchain/",
+    "@ai-sdk/",
+    "@modelcontextprotocol/",
+    "@mastra/",
+    "@mistralai/",
+    "@llamaindex/",
+    "@huggingface/",
+    "@aws-sdk/client-bedrock",
+    "@azure/openai",
+    "@genkit-ai/",
+    "@cohere-ai/",
+    "@xenova/"
+   ]
+  },
+  "PyPI": {
+   "names": [
+    "openai",
+    "anthropic",
+    "google-genai",
+    "google-generativeai",
+    "google-cloud-aiplatform",
+    "vertexai",
+    "mistralai",
+    "cohere",
+    "groq",
+    "ollama",
+    "litellm",
+    "langchain",
+    "langgraph",
+    "langsmith",
+    "langfuse",
+    "llama-index",
+    "guardrails-ai",
+    "crewai",
+    "dspy",
+    "dspy-ai",
+    "instructor",
+    "transformers",
+    "huggingface-hub",
+    "sentence-transformers",
+    "mcp",
+    "fastmcp",
+    "pydantic-ai",
+    "pydantic-ai-slim",
+    "autogen-agentchat",
+    "autogen-core",
+    "pyautogen",
+    "haystack-ai",
+    "together",
+    "openai-agents",
+    "semantic-kernel",
+    "chromadb",
+    "pinecone",
+    "pinecone-client",
+    "qdrant-client",
+    "weaviate-client",
+    "tiktoken",
+    "vllm",
+    "smolagents",
+    "agno",
+    "letta",
+    "google-adk",
+    "boto3-bedrock",
+    "anthropic-bedrock",
+    "replicate",
+    "deepseek"
+   ],
+   "prefixes": [
+    "langchain-",
+    "llama-index-",
+    "langgraph-",
+    "crewai-",
+    "mcp-server-",
+    "mcp-",
+    "fastmcp-",
+    "autogen-",
+    "haystack-",
+    "openai-",
+    "anthropic-",
+    "semantic-kernel-",
+    "pydantic-ai-",
+    "google-genai-",
+    "litellm-"
+   ]
+  }
+ },
+ "compromised": [
+  {
+   "ecosystem": "PyPI",
+   "name": "litellm",
+   "versions": [
+    "1.82.7",
+    "1.82.8"
+   ],
+   "advisory": "PYSEC-2026-2",
+   "aliases": [
+    "MAL-2026-2144",
+    "GHSA-5mg7-485q-xm76"
+   ],
+   "published": "2026-03-24",
+   "summary": "Two litellm releases carried credential-harvesting malware that ran on import and sent SSH keys, cloud and Git credentials and .env files to a remote server.",
+   "sources": [
+    {
+     "url": "https://osv.dev/vulnerability/PYSEC-2026-2",
+     "checked": "2026-11-23"
+    },
+    {
+     "url": "https://osv.dev/vulnerability/MAL-2026-2144",
+     "checked": "2026-11-23"
+    }
+   ]
+  },
+  {
+   "ecosystem": "PyPI",
+   "name": "litellm",
+   "versions": [
+    "1.107.0"
+   ],
+   "advisory": "MAL-2026-2144",
+   "aliases": [],
+   "published": "2026-10-21",
+   "summary": "litellm 1.107.0 on PyPI contained a credential stealer and a remote code execution backdoor that run at every Python start, even without importing litellm.",
+   "sources": [
+    {
+     "url": "https://osv.dev/vulnerability/MAL-2026-2144",
+     "checked": "2026-11-23"
+    }
+   ]
+  },
+  {
+   "ecosystem": "PyPI",
+   "name": "mistralai",
+   "versions": [
+    "2.4.6"
+   ],
+   "advisory": "GHSA-wx9m-wx4f-4cmg",
+   "aliases": [
+    "MAL-2026-3608"
+   ],
+   "published": "2026-05-12",
+   "summary": "mistralai 2.4.6 on PyPI contained a malicious dropper.",
+   "sources": [
+    {
+     "url": "https://osv.dev/vulnerability/GHSA-wx9m-wx4f-4cmg",
+     "checked": "2026-11-23"
+    },
+    {
+     "url": "https://osv.dev/vulnerability/MAL-2026-3608",
+     "checked": "2026-11-23"
+    }
+   ]
+  },
+  {
+   "ecosystem": "PyPI",
+   "name": "guardrails-ai",
+   "versions": [
+    "0.10.1"
+   ],
+   "advisory": "GHSA-xmpw-2vmm-p4p6",
+   "aliases": [
+    "MAL-2026-3607"
+   ],
+   "published": "2026-05-12",
+   "summary": "guardrails-ai 0.10.1 contained malicious code (supply-chain compromise).",
+   "sources": [
+    {
+     "url": "https://osv.dev/vulnerability/GHSA-xmpw-2vmm-p4p6",
+     "checked": "2026-11-23"
+    },
+    {
+     "url": "https://osv.dev/vulnerability/MAL-2026-3607",
+     "checked": "2026-11-23"
+    }
+   ]
+  },
+  {
+   "ecosystem": "npm",
+   "name": "@mistralai/mistralai",
+   "versions": [
+    "2.2.2",
+    "2.2.3",
+    "2.2.4"
+   ],
+   "advisory": "GHSA-jgg6-4rpr-wfh7",
+   "aliases": [
+    "MAL-2026-3432",
+    "GHSA-3q49-cfcf-g5fm"
+   ],
+   "published": "2026-05-11",
+   "summary": "Compromised by the self-spreading npm worm tied to the TanStack incident; the versions were removed from npm.",
+   "sources": [
+    {
+     "url": "https://osv.dev/vulnerability/GHSA-jgg6-4rpr-wfh7",
+     "checked": "2026-11-23"
+    },
+    {
+     "url": "https://osv.dev/vulnerability/MAL-2026-3432",
+     "checked": "2026-11-23"
+    }
+   ]
+  },
+  {
+   "ecosystem": "npm",
+   "name": "@mistralai/mistralai-azure",
+   "versions": [
+    "1.7.1",
+    "1.7.2",
+    "1.7.3"
+   ],
+   "advisory": "GHSA-jgg6-4rpr-wfh7",
+   "aliases": [],
+   "published": "2026-05-11",
+   "summary": "Compromised by the self-spreading npm worm tied to the TanStack incident; the versions were removed from npm.",
+   "sources": [
+    {
+     "url": "https://osv.dev/vulnerability/GHSA-jgg6-4rpr-wfh7",
+     "checked": "2026-11-23"
+    }
+   ]
+  },
+  {
+   "ecosystem": "npm",
+   "name": "@mistralai/mistralai-gcp",
+   "versions": [
+    "1.7.1",
+    "1.7.2",
+    "1.7.3"
+   ],
+   "advisory": "GHSA-jgg6-4rpr-wfh7",
+   "aliases": [],
+   "published": "2026-05-11",
+   "summary": "Compromised by the self-spreading npm worm tied to the TanStack incident; the versions were removed from npm.",
+   "sources": [
+    {
+     "url": "https://osv.dev/vulnerability/GHSA-jgg6-4rpr-wfh7",
+     "checked": "2026-11-23"
+    }
+   ]
+  },
+  {
+   "ecosystem": "npm",
+   "name": "@mastra/core",
+   "versions": [
+    "1.42.1"
+   ],
+   "advisory": "MAL-2026-6011",
+   "aliases": [],
+   "published": "2026-06-17",
+   "summary": "@mastra/core 1.42.1 contained malicious code.",
+   "sources": [
+    {
+     "url": "https://osv.dev/vulnerability/MAL-2026-6011",
+     "checked": "2026-11-23"
+    }
+   ]
+  },
+  {
+   "ecosystem": "npm",
+   "name": "mastra",
+   "versions": [
+    "1.13.1"
+   ],
+   "advisory": "MAL-2026-5965",
+   "aliases": [
+    "GHSA-mvf4-vg87-q9vm"
+   ],
+   "published": "2026-06-17",
+   "summary": "mastra 1.13.1 contained malicious code, or depended on a package that did.",
+   "sources": [
+    {
+     "url": "https://osv.dev/vulnerability/MAL-2026-5965",
+     "checked": "2026-11-23"
+    }
+   ]
+  }
+ ]
+}

@@ -12,6 +12,7 @@ import {
   type TokenPrice,
 } from "@ai-change-guard/catalog";
 import { buildCostRows, describeCost, formatPrice, type CostRow } from "./costs.js";
+import { aiPackagesOf, checkPackagesOffline, checkPackagesOnline, describePackage, PACKAGE_FIX, sortPackageRows, type AiPackage, type OnlineOptions, type PackageRow } from "./packages.js";
 import type { ScanResult } from "./scan.js";
 import { SECURITY_RULES, type SecurityRule } from "./security.js";
 import { TOKEN_RULES, type TokenRule } from "./tokens.js";
@@ -83,6 +84,11 @@ export interface Report {
   security?: SecurityRow[];
   /** Cost Change Guard: announced price changes for the models found. Missing in older stored reports. */
   costs?: CostRow[];
+  /** AI package guard: the AI packages the project installs, and problems found with them. */
+  aiPackages?: AiPackage[];
+  packages?: PackageRow[];
+  /** Set once the online package check ran (OSV and registries); "failed" counts lookups that did not answer. */
+  packagesOnline?: { checked: true; failed: number };
 }
 
 const SEVERITY_ORDER = { high: 0, medium: 1, review: 2 } as const;
@@ -157,6 +163,10 @@ export function refreshReport(report: Report, today: string): Report {
     models,
     apis: report.apis.map((a) => ({ ...a, daysLeft: daysBetween(today, a.date) })),
     costs: costRowsFor(models, today),
+    // Malicious releases added to the catalog since the scan show up too; online findings are kept as found.
+    ...(report.aiPackages
+      ? { packages: sortPackageRows([...checkPackagesOffline(report.aiPackages), ...(report.packages ?? []).filter((p) => p.source !== "catalog")]) }
+      : {}),
   };
 }
 
@@ -267,6 +277,7 @@ export function buildReport(result: ScanResult, target: string, today: string): 
   const security = [...securityRows.values()].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || b.findings.length - a.findings.length);
 
   const costs = costRowsFor(models, today);
+  const aiPackages = aiPackagesOf(result.dependencies ?? []);
 
   return {
     target,
@@ -280,7 +291,15 @@ export function buildReport(result: ScanResult, target: string, today: string): 
     tokenTips,
     security,
     costs,
+    aiPackages,
+    packages: sortPackageRows(checkPackagesOffline(aiPackages)),
   };
+}
+
+/** Adds the online package check (OSV advisories, registry existence and age) to a report. */
+export async function addOnlinePackageChecks(report: Report, options: OnlineOptions): Promise<Report> {
+  const { rows, failed } = await checkPackagesOnline(report.aiPackages ?? [], options);
+  return { ...report, packages: sortPackageRows([...(report.packages ?? []), ...rows]), packagesOnline: { checked: true, failed } };
 }
 
 /** "uses about 30% more tokens", for a tokenizer ratio. */
@@ -330,7 +349,7 @@ export function formatText(report: Report): string {
     out.push("No AI model IDs found in code or config.");
     out.push("If this app uses AI, the model may be set in a database, a dashboard or a gateway config. Check there.");
     // Security findings (an exposed key, an unpinned MCP server) matter even without model IDs.
-    if (!report.security?.length) return out.join("\n");
+    if (!report.security?.length && !report.aiPackages?.length) return out.join("\n");
     out.push("");
   }
 
@@ -394,6 +413,19 @@ export function formatText(report: Report): string {
       if (s.findings.length > 10) out.push(`    ... and ${s.findings.length - 10} more`);
       out.push(`    fix: ${s.fix}`);
     }
+    out.push("");
+  }
+
+  if (report.aiPackages?.length) {
+    const how = report.packagesOnline ? "checked against the catalog and OSV, unknown names against the registry" : "checked against the catalog; add --online for OSV and registry checks";
+    out.push(`AI packages: ${report.aiPackages.length} found, ${how}`);
+    if (!report.packages?.length) out.push("  No known malicious release among them.");
+    for (const p of report.packages ?? []) {
+      out.push(`  ${p.issue === "compromised" ? "HIGH  " : "REVIEW"}  ${describePackage(p)}  ${whereLabel(p.locations)}`);
+      out.push(`    fix: ${PACKAGE_FIX[p.issue]}`);
+      if (p.url) out.push(`    advisory: ${p.url}`);
+    }
+    if (report.packagesOnline?.failed) out.push(`  ${report.packagesOnline.failed} online lookup${report.packagesOnline.failed === 1 ? "" : "s"} did not answer; run again to check them.`);
     out.push("");
   }
 

@@ -12,7 +12,7 @@ import {
   runWatch,
   slackMessage,
 } from "@ai-change-guard/replay";
-import { buildCheck, buildReport, checkSwitchIds, planSwitch, scanDirectory, type Report } from "@ai-change-guard/scanner";
+import { addOnlinePackageChecks, buildCheck, buildReport, checkSwitchIds, planSwitch, scanDirectory, type Report } from "@ai-change-guard/scanner";
 import { githubApi, openEvidencePr, type GitHubApi } from "./pr.js";
 
 const SOON_DAYS = 90;
@@ -36,6 +36,8 @@ function oneOf(value: string, name: string, allowed: string[]): string {
 
 export function scanFails(report: Report, failOn: string): boolean {
   if (failOn === "none") return false;
+  // A malicious AI package release fails the step at every level except "none".
+  if (report.packages?.some((p) => p.issue === "compromised")) return true;
   const retired = report.models.some((m) => m.status === "retired" || m.status === "rerouted") || report.apis.some((a) => a.daysLeft <= 0);
   if (failOn === "retired") return retired;
   const soon =
@@ -82,7 +84,10 @@ export async function run({ env, today, log, client, github }: RunDeps): Promise
   const openPr = oneOf(input("open-pr", env) || "false", "open-pr", ["true", "false"]) === "true";
   const scanRoot = resolve(workspace, input("path", env) || ".");
   const scan = await scanDirectory(scanRoot);
-  const report = buildReport(scan, env.GITHUB_REPOSITORY ?? workspace, today);
+  let report = buildReport(scan, env.GITHUB_REPOSITORY ?? workspace, today);
+  if (oneOf(input("online-package-check", env) || "false", "online-package-check", ["true", "false"]) === "true") {
+    report = await addOnlinePackageChecks(report, { today });
+  }
   const check = buildCheck(report, null);
   await summary(`## AI Change Guard: ${check.title}\n\n${check.summary}`);
   let failed = scanFails(report, failOn);

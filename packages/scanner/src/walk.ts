@@ -1,6 +1,7 @@
 import { readdir } from "node:fs/promises";
 import { basename, extname, join, relative, sep } from "node:path";
 import type { FileKind } from "./detect.js";
+import { isLockfile } from "./deps.js";
 
 const SKIP_DIRS = new Set([
   "node_modules",
@@ -23,13 +24,8 @@ const SKIP_DIRS = new Set([
   ".cache",
 ]);
 
+// npm and Python lockfiles are read for the AI package guard only (see `lock`), never scanned as code.
 const SKIP_FILES = new Set([
-  "package-lock.json",
-  "yarn.lock",
-  "pnpm-lock.yaml",
-  "poetry.lock",
-  "Pipfile.lock",
-  "uv.lock",
   "Cargo.lock",
   "go.sum",
   "composer.lock",
@@ -73,6 +69,8 @@ export interface WalkedFile {
   path: string;
   rel: string;
   kind: FileKind;
+  /** A lockfile: read for its dependencies only. */
+  lock?: true;
 }
 
 export async function* walk(root: string): AsyncGenerator<WalkedFile> {
@@ -94,6 +92,10 @@ export async function* walk(root: string): AsyncGenerator<WalkedFile> {
         continue;
       }
       if (!entry.isFile() || SKIP_FILES.has(entry.name)) continue;
+      if (isLockfile(entry.name)) {
+        yield { path: full, rel: relative(root, full).split(sep).join("/"), kind: "config", lock: true };
+        continue;
+      }
       const kind = fileKind(entry.name);
       if (kind) yield { path: full, rel: relative(root, full).split(sep).join("/"), kind };
     }

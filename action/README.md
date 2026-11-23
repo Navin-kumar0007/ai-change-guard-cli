@@ -129,7 +129,8 @@ How it behaves:
 | Input | Default | Meaning |
 | --- | --- | --- |
 | `path` | `.` | Folder to scan |
-| `fail-on` | `retired` | Fail when a model or API is `retired`, `retiring` (within 90 days), or `none` |
+| `fail-on` | `retired` | Fail when a model or API is `retired`, `retiring` (within 90 days), or `none`. A malicious AI package release in a lockfile fails unless `none` |
+| `online-package-check` | `false` | `true` also checks AI packages online: OSV malicious-code advisories, and npm / PyPI for AI-sounding names that don't exist or are brand new. Sends package names and versions, never code |
 | `prompts` | | Golden set (JSONL) for a replay |
 | `old-model`, `new-model` | | `provider:model` |
 | `runs` | `3` | Runs per prompt on each model |

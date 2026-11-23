@@ -1,4 +1,5 @@
 import { describeCost } from "./costs.js";
+import { describePackage, PACKAGE_FIX } from "./packages.js";
 import type { ModelRow, Report } from "./report.js";
 
 export type Conclusion = "success" | "neutral" | "failure";
@@ -38,18 +39,30 @@ export function buildCheck(report: Report, changedFiles: string[] | null): Check
   // Security findings stay advisory, except an AI key exposed in a file this pull request changes.
   const keyRow = report.security?.find((s) => s.rule === "ai-key-exposed");
   const introducedKey = Boolean(keyRow && inChangedFiles(keyRow.findings.map((f) => f.location), changed));
+  // A malicious AI package release fails the check when this pull request touches the file that installs it.
+  const compromised = (report.packages ?? []).filter((p) => p.issue === "compromised");
+  const introducedPackage = compromised.some((p) => inChangedFiles(p.locations, changed));
   const conclusion: Conclusion =
-    introducedDead || introducedKey ? "failure" : dead.length + deadApis.length + soon.length + soonApis.length > 0 ? "neutral" : "success";
+    introducedDead || introducedKey || introducedPackage ? "failure" : compromised.length > 0 ? "neutral" : dead.length + deadApis.length + soon.length + soonApis.length > 0 ? "neutral" : "success";
 
   const parts: string[] = [];
   if (dead.length + deadApis.length > 0) parts.push(`${dead.length + deadApis.length} retired`);
   if (soon.length + soonApis.length > 0) parts.push(`${soon.length + soonApis.length} changing within ${SOON_DAYS} days`);
   const modelTitle = parts.length > 0 ? `AI models and APIs: ${parts.join(", ")}` : `${report.models.length} AI models found, none changing soon`;
-  const title = introducedKey ? `AI API key exposed in this pull request · ${modelTitle}` : modelTitle;
+  const title = introducedKey
+    ? `AI API key exposed in this pull request · ${modelTitle}`
+    : compromised.length > 0
+      ? `Malicious AI package release installed · ${modelTitle}`
+      : modelTitle;
 
   const lines: string[] = [];
   if (introducedKey) lines.push("**This pull request adds or touches a file with an exposed AI API key. Revoke the key and move it to a server-side secret.**", "");
   if (introducedDead) lines.push("**This pull request touches code that uses a retired AI model or API.**", "");
+  if (compromised.length > 0) {
+    lines.push(`**${introducedPackage ? "This pull request installs" : "This repository installs"} an AI package release that was published with malicious code.** ${PACKAGE_FIX.compromised}`);
+    for (const p of compromised) lines.push(`- ${describePackage(p)} (${p.locations.slice(0, 3).map((l) => `\`${l}\``).join(", ")})${p.url ? ` [advisory](${p.url})` : ""}`);
+    lines.push("");
+  }
   const rows = [...dead, ...soon];
   if (rows.length > 0) {
     const prColumn = changedFiles !== null;
@@ -75,6 +88,11 @@ export function buildCheck(report: Report, changedFiles: string[] | null): Check
       const where = s.findings.slice(0, 3).map((f) => `\`${f.location}\``).join(", ") + (s.findings.length > 3 ? ` +${s.findings.length - 3} more` : "");
       lines.push(`- ${s.severity === "high" ? "**High:** " : ""}${s.title} [${s.owasp}]: ${where}. ${s.fix}`);
     }
+  }
+  const otherPackages = (report.packages ?? []).filter((p) => p.issue !== "compromised");
+  if (otherPackages.length > 0) {
+    lines.push("", "**AI packages to review** (advisory):");
+    for (const p of otherPackages) lines.push(`- ${describePackage(p)}`);
   }
   if (report.tokenTips.length > 0) {
     lines.push("", "**Token Saver:** " + report.tokenTips.map((t) => `${t.title} (${t.locations.length})`).join(" · "));

@@ -30,7 +30,7 @@ import {
   plannedCalls,
   runReplayJob,
 } from "@ai-change-guard/replay";
-import { buildReport, formatText, localToday } from "./report.js";
+import { addOnlinePackageChecks, buildReport, formatText, localToday } from "./report.js";
 import { describeCost, formatUsd } from "./costs.js";
 import { estimateImpact, usageFromLog, type ImpactSummary, type ModelUsage } from "./impact.js";
 import { findPrompts } from "./prompts.js";
@@ -56,6 +56,9 @@ Scan options:
   --json                      Print the report as JSON
   --today YYYY-MM-DD          Count days from this date instead of today
   --fail-on retired|retiring  Exit with code 1 if any model is retired (or retiring)
+  --online                    Also check AI packages online: OSV advisories, and npm / PyPI for names that
+                              don't exist or are brand new (sends package names and versions, never code)
+  A malicious AI package release in a lockfile always exits with code 1.
 
 Replay options:
   --runs N                    Runs per prompt on each model (default 5)
@@ -563,18 +566,21 @@ interface Options {
   target: string;
   json: boolean;
   today: string;
+  online: boolean;
   failOn?: "retired" | "retiring";
 }
 
 function parseArgs(args: string[]): Options {
   let target: string | undefined;
   let json = false;
+  let online = false;
   let today = localToday();
   let failOn: Options["failOn"];
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     if (arg === "--json") json = true;
+    else if (arg === "--online") online = true;
     else if (arg === "--today") today = args[++i] ?? "";
     else if (arg === "--fail-on") {
       const value = args[++i];
@@ -587,7 +593,7 @@ function parseArgs(args: string[]): Options {
 
   if (!target) throw new UsageError("Give a folder or a GitHub link to scan.");
   if (!DATE_RE.test(today)) throw new UsageError("--today must look like 2026-11-17");
-  const options: Options = { target, json, today };
+  const options: Options = { target, json, today, online };
   if (failOn) options.failOn = failOn;
   return options;
 }
@@ -625,11 +631,13 @@ async function main(argv: string[]): Promise<number> {
 
   try {
     const result = await scanDirectory(folder);
-    const report = buildReport(result, options.target, options.today);
+    let report = buildReport(result, options.target, options.today);
+    if (options.online) report = await addOnlinePackageChecks(report, { today: options.today });
     console.log(options.json ? JSON.stringify(report, null, 2) : formatText(report));
 
     const retired = report.models.some((m) => m.status === "retired" || m.status === "rerouted");
     const changing = report.models.some((m) => m.status !== "no-known-retirement") || report.apis.length > 0;
+    if (report.packages?.some((p) => p.issue === "compromised")) return 1;
     if (options.failOn === "retired" && retired) return 1;
     if (options.failOn === "retiring" && changing) return 1;
     return 0;

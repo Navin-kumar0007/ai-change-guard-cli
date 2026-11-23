@@ -11,6 +11,7 @@ AI providers retire models on a schedule. When a model you call is retired, requ
 - **Tested fallbacks:** `fallback` replays your golden set on backup models and writes a LiteLLM or OpenRouter fallback config with only the ones that broke nothing, so an outage switches to a model you know works.
 - **Switch:** once the replay passes, changes the model ID across your code, or opens a pull request with the replay report as proof.
 - **AI security check:** flags AI-specific mistakes with zero AI calls: AI keys in code or the browser, model output passed to eval, a shell, SQL or raw HTML, user input inside the system prompt, agent tools that delete, pay or send without a confirmation step, and unpinned MCP servers (mapped to the OWASP Top 10 for LLM and agentic apps; advisory, never a guarantee).
+- **AI package guard:** reads your lockfiles and manifests (npm, pnpm, yarn, pip, Poetry, uv, Pipenv) and flags AI SDK, agent and MCP releases that were published with malicious code, such as litellm 1.82.7, 1.82.8 and 1.107.0, mistralai 2.4.6, guardrails-ai 0.10.1 and @mastra/core 1.42.1, each with its OSV advisory. With `--online` it also asks OSV for newer advisories, and npm or PyPI whether AI-sounding packages exist and how old they are: an invented or days-old name is a sign of a fake package.
 - **Price changes:** the scan lists announced price changes for the models you use: introductory prices ending, scheduled increases, and reroutes billed at another model's rates. It also shows each suggested replacement's price, and warns when the replacement's tokenizer uses more tokens for the same text. `cost` turns that into dollars a month from your real call volume. A replay shows the cost per call on both models.
 - **Token Saver:** points out common token waste (no output limit, no prompt caching, cache-breaking prompts, unbatched loops).
 - **Inside your AI assistant:** an [MCP server](packages/mcp/README.md) lets Claude Code, Cursor and other MCP clients scan your repo, look up retirement dates, plan a switch and test it.
@@ -77,6 +78,22 @@ node packages/scanner/dist/cli.js fallback --set golden.jsonl --model openai:gpt
 ```
 
 Your model answers the golden set once; each candidate answers it too and is judged against those answers. Only candidates with nothing broken go into the config, fewest changed answers first. `--format litellm` writes a LiteLLM proxy `config.yaml` (`router_settings.fallbacks`, keys read from the environment); `--format openrouter` writes the `models` fallback list for OpenRouter requests and lists the ids to check on openrouter.ai/models. Cost: prompts × runs × (1 + candidates) calls.
+
+## AI packages: malicious releases and fake names
+
+The scan reads `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `poetry.lock`, `uv.lock`, `Pipfile.lock`, `requirements*.txt` and `package.json`. It keeps only AI packages: SDKs, agent frameworks, MCP, vector stores and AI-sounding names. It then checks their exact versions against the releases in [`packages/catalog/data/packages.json`](packages/catalog/data/packages.json) that were published with malicious code. A match prints a HIGH finding with the advisory link, and the scan exits with code 1.
+
+```sh
+node packages/scanner/dist/cli.js scan ./my-app --online
+```
+
+`--online` adds three lookups:
+
+- OSV (osv.dev) for malicious-code advisories newer than the catalog.
+- npm or PyPI for AI-sounding names the catalog doesn't list. A name that isn't on the registry may be one an AI assistant invented. Anyone could publish under it.
+- The same registries for names first published in the last 30 days.
+
+It sends package names and versions only, never code. It skips packages from a private index or registry, the repository's own workspace packages, and npm scopes it doesn't know. Ordinary vulnerabilities (CVEs) are left to Dependabot, Snyk and similar tools; this check is only about malicious and fake AI packages.
 
 ## What price changes cost you
 
