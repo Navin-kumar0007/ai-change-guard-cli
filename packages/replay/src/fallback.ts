@@ -37,6 +37,8 @@ export interface FallbackOptions {
   concurrency?: number;
   maxCalls?: number;
   signal?: AbortSignal;
+  /** Day the replay's cost per call is priced on (default: today). */
+  today?: string;
 }
 
 export function plannedFallbackCalls(items: number, runs: number, candidates: number): number {
@@ -82,7 +84,7 @@ export async function testFallbacks(options: FallbackOptions): Promise<FallbackR
   const results = await Promise.all(
     candidates.map(async (model): Promise<CandidateResult & { calls: number }> => {
       const records = await runReplay({ ...common, items, oldModel: primary, newModel: model, sides: ["new"], maxCalls: perCandidate });
-      const report = buildReplayReport(items, [...primaryRecords, ...records], { oldModel: primary, newModel: model, runs, judge: { share: ANY_RUN } });
+      const report = buildReplayReport(items, [...primaryRecords, ...records], { oldModel: primary, newModel: model, runs, judge: { share: ANY_RUN }, ...(options.today ? { today: options.today } : {}) });
       const t = report.totals;
       const rerouted = report.reroutes.filter((r) => r.side === "new");
       const reason =

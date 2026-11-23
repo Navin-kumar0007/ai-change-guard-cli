@@ -44,6 +44,15 @@ inputs:
   repair:
     description: "When the new model breaks a prompt's JSON format, try fixes on the new model and show the one that works (true or false). Extra calls count against max-calls."
     default: "false"
+  find-savings:
+    description: "true runs Money-Finder: replays prompts on cheaper models of the same provider as old-model and reports the one with nothing broken and at most 2% changed. With open-pr: true, opens the switch pull request with the savings card."
+    default: "false"
+  candidates:
+    description: "Comma-separated provider:model list for find-savings (default: the 2 nearest cheaper models in the catalog)."
+    default: ""
+  calls-per-month:
+    description: "Your monthly calls to old-model, to show the monthly saving in the savings card."
+    default: ""
   open-pr:
     description: "After a replay that passes, open a pull request that switches old-model to new-model, with the replay report as proof (true or false). Runs on the default branch only; needs contents: write and pull-requests: write."
     default: "false"

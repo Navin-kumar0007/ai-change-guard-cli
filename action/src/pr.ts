@@ -48,6 +48,8 @@ export interface EvidencePrInput {
   scanPath: string;
   plan: SwitchPlan;
   replay: ReplayReport;
+  /** Markdown shown under the heading, e.g. the Money-Finder savings card. */
+  extra?: string;
 }
 
 interface PullRequest {
@@ -77,7 +79,7 @@ function listed<T>(items: T[], render: (item: T) => string, more: string): strin
   return [...items.slice(0, MAX_LISTED).map(render), ...(items.length > MAX_LISTED ? [`- …and ${items.length - MAX_LISTED} more ${more}`] : [])];
 }
 
-export function evidenceBody(plan: SwitchPlan, replay: ReplayReport, scanPath: string, note?: string): string {
+export function evidenceBody(plan: SwitchPlan, replay: ReplayReport, scanPath: string, note?: string, extra?: string): string {
   const where = (file: string, line: number) => `\`${posix.join(scanPath || ".", file)}:${line}\``;
   const t = replay.totals;
   const prompts = replay.items.length;
@@ -85,6 +87,7 @@ export function evidenceBody(plan: SwitchPlan, replay: ReplayReport, scanPath: s
     ...(note ? [`> ${note}`, ""] : []),
     `## Switch \`${plan.from}\` to \`${plan.to}\``,
     "",
+    ...(extra ? [extra, ""] : []),
     `Before opening this pull request, AI Change Guard replayed **${prompts} of your real prompt${prompts === 1 ? "" : "s"}** ${replay.runs} time${replay.runs === 1 ? "" : "s"} each on \`${replay.oldModel}\` and \`${replay.newModel}\`.`,
     "",
     "| Same | Changed | Broken | Errors |",
@@ -192,7 +195,7 @@ export async function openEvidencePr(input: EvidencePrInput): Promise<EvidencePr
   const t = replay.totals;
   const subject = `Switch ${plan.from} to ${plan.to}`;
   const message = `${subject}\n\nReplayed ${replay.items.length} prompt${replay.items.length === 1 ? "" : "s"} x ${replay.runs} run${replay.runs === 1 ? "" : "s"} with AI Change Guard: ${t.same} same, ${t.changed} changed, ${t.broken} broken.`;
-  const body = evidenceBody(plan, replay, input.scanPath);
+  const body = evidenceBody(plan, replay, input.scanPath, undefined, input.extra);
 
   const listPulls = () =>
     api<PullRequest[]>("GET", `/repos/${repo}/pulls?state=all&per_page=20&head=${encodeURIComponent(`${owner}:${branch}`)}`);
@@ -223,7 +226,7 @@ export async function openEvidencePr(input: EvidencePrInput): Promise<EvidencePr
       await api("PATCH", `/repos/${repo}/git/refs/heads/${branch}`, { sha: await commit(), force: true });
     }
     const note = owned ? undefined : `People have added commits to this branch, so AI Change Guard no longer changes its code. The lists below describe ${base} today.`;
-    await api("PATCH", `/repos/${repo}/pulls/${pr.number}`, { body: owned ? body : evidenceBody(plan, replay, input.scanPath, note) });
+    await api("PATCH", `/repos/${repo}/pulls/${pr.number}`, { body: owned ? body : evidenceBody(plan, replay, input.scanPath, note, input.extra) });
     return { action: "updated", number: pr.number, url: pr.html_url };
   };
 

@@ -1,4 +1,4 @@
-import { billedPriceOn, callCost, defaultPlatform, formatUsd, localToday, type Provider } from "@ai-change-guard/catalog";
+import { billedPriceOn, callCost, defaultPlatform, formatUsd, localToday, type Platform, type Provider } from "@ai-change-guard/catalog";
 import type { GoldenItem } from "./golden.js";
 import type { RunRecord, Side } from "./run.js";
 import { judgeItem, type ItemResult, type JudgeOptions, type Verdict } from "./verdict.js";
@@ -50,11 +50,18 @@ export function isReroute(requested: string, served: string): boolean {
   return !b.startsWith(a) && !a.startsWith(b);
 }
 
+/**
+ * The catalog platform a provider:model reference is priced on. Undefined for gateways (groq, openrouter,
+ * ollama), which bill their own prices: the catalog only knows the providers' own APIs.
+ */
+export function platformForRef(ref: string): Platform | undefined {
+  const provider = ref.slice(0, ref.indexOf(":"));
+  return Object.hasOwn(defaultPlatform, provider) ? defaultPlatform[provider as Provider] : undefined;
+}
+
 /** List-price cost of one call for a provider:model reference, or undefined when the catalog has no price. */
 export function costOfCall(ref: string, usage: Usage, today: string): number | undefined {
-  const provider = ref.slice(0, ref.indexOf(":"));
-  // Gateways (groq, openrouter, ollama) bill their own prices: the catalog only knows the providers' own APIs.
-  const platform = Object.hasOwn(defaultPlatform, provider) ? defaultPlatform[provider as Provider] : undefined;
+  const platform = platformForRef(ref);
   const price = platform ? billedPriceOn(modelName(ref), platform, today) : undefined;
   return price ? callCost(price, usage.input, usage.output) : undefined;
 }

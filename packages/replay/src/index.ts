@@ -7,7 +7,7 @@ export { runReplay, plannedCalls, SpendCapError } from "./run.js";
 export type { RunRecord, ReplayOptions, Side } from "./run.js";
 export { judgeItem } from "./verdict.js";
 export type { ItemResult, Reason, ReasonCode, SideStats, Verdict } from "./verdict.js";
-export { buildReplayReport, costLine, costOfCall, formatReplayMarkdown, formatReplayText, isReroute } from "./report.js";
+export { buildReplayReport, costLine, costOfCall, formatReplayMarkdown, formatReplayText, isReroute, platformForRef } from "./report.js";
 export type { ReplayReport, Reroute } from "./report.js";
 export { applyRepair, formatInstruction, formatRepairMarkdown, formatRepairText, goldenLine, plannedRepairCalls, repairable, runRepair } from "./repair.js";
 export type { RepairAttempt, RepairKind, RepairPatch, RepairReport, RepairResult } from "./repair.js";
@@ -23,3 +23,5 @@ export type { Baseline, BaselineOptions, WatchOptions, WatchReport } from "./wat
 export type { JudgeOptions } from "./verdict.js";
 export { cleanCandidates, litellmConfig, openrouterConfig, plannedFallbackCalls, testFallbacks } from "./fallback.js";
 export type { CandidateResult, FallbackOptions, FallbackResult } from "./fallback.js";
+export { candidateProblem, cheaperCandidates, findSavings, formatSavingsMarkdown, formatSavingsText, MAX_CHANGED_SHARE, steadyCost } from "./savings.js";
+export type { Candidate, SavingsCandidate, SavingsOptions, SavingsResult } from "./savings.js";

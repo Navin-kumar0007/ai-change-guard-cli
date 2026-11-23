@@ -2,6 +2,11 @@ import { appendFile, readFile } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { createClient, parseModelRef, withRetry, type LlmClient } from "@ai-change-guard/llm";
 import {
+  candidateProblem,
+  cheaperCandidates,
+  cleanCandidates,
+  findSavings,
+  formatSavingsMarkdown,
   formatRepairMarkdown,
   formatReplayMarkdown,
   formatWatchMarkdown,
@@ -125,6 +130,67 @@ export async function run({ env, today, log, client, github }: RunDeps): Promise
     const t = watch.report.totals;
     log(`${watch.alert ? "::error::" : ""}AI Change Guard watch: ${t.same} same, ${t.changed} changed, ${t.broken} broken${watch.reroutes.length ? `, rerouted to ${watch.reroutes.map((r) => r.served).join(", ")}` : ""}`);
     return failed || watch.alert ? 1 : 0;
+  }
+
+  if (oneOf(input("find-savings", env) || "false", "find-savings", ["true", "false"]) === "true") {
+    // Money-Finder: cheaper models on the same provider, judged on the golden set against old-model.
+    if (!prompts || !oldModel) throw new Error('find-savings needs "prompts" and "old-model" (the model you use now).');
+    if (newModel) throw new Error('find-savings picks the new model itself: remove "new-model", or run the replay in a separate step.');
+    const candidatesInput = input("candidates", env);
+    const candidates = candidatesInput ? cleanCandidates(oldModel, candidatesInput.split(",")) : cheaperCandidates(oldModel, today).map((c) => c.ref);
+    if (candidatesInput && candidates.length === 0) throw new Error('"candidates" needs at least one model other than "old-model".');
+    // A switch PR is planned for every testable candidate before any paid call: a bad ID or another provider fails here.
+    const plans = new Map<string, Awaited<ReturnType<typeof planSwitch>>>();
+    if (openPr) {
+      for (const c of candidates) {
+        if (candidateProblem(c, today)) continue;
+        const ids = switchIds(oldModel, c);
+        plans.set(c, await planSwitch(scanRoot, scan.findings, ids.from, ids.to, ids.prefix ? { prefix: ids.prefix } : {}));
+      }
+    }
+    const callsInput = input("calls-per-month", env);
+    const llm = client ?? withRetry(createClient({ env }));
+    const result = await findSavings({
+      candidates,
+      items: await loadGoldenSet(resolve(workspace, prompts)),
+      primary: oldModel,
+      client: llm,
+      runs: positive(input("runs", env) || "3", "runs"),
+      concurrency: positive(input("concurrency", env) || "2", "concurrency"),
+      maxCalls: positive(input("max-calls", env) || "300", "max-calls"),
+      today,
+      ...(callsInput ? { callsPerMonth: positive(callsInput, "calls-per-month") } : {}),
+    });
+    const card = formatSavingsMarkdown(result);
+    await summary(card);
+    log(result.best ? `AI Change Guard Money-Finder: ${result.best.model} passes and is ${Math.round((result.best.savingShare ?? 0) * 100)}% cheaper per call` : "AI Change Guard Money-Finder: no cheaper model passed");
+    if (openPr && result.best) {
+      const plan = plans.get(result.best.model)!;
+      const notice = (text: string) => log(`::notice::AI Change Guard: ${text}`);
+      if (result.skippedPrompts.length > 0) notice(`no pull request, because ${oldModel} did not answer ${result.skippedPrompts.length} prompt(s), so the comparison is incomplete.`);
+      else if (plan.edits.length === 0) notice(`no pull request, because no code uses ${plan.from} as a plain model ID.`);
+      else {
+        const token = input("github-token", env) || env.GITHUB_TOKEN || "";
+        if (!github && !token) throw new Error('open-pr needs a token: keep the default "github-token" input or pass one.');
+        const pr = await openEvidencePr({
+          api: github ?? githubApi(token, env.GITHUB_API_URL),
+          repo: env.GITHUB_REPOSITORY ?? "",
+          ref: env.GITHUB_REF ?? "",
+          sha: env.GITHUB_SHA ?? "",
+          workspace,
+          scanPath: relative(workspace, scanRoot).split(sep).join("/"),
+          plan,
+          replay: result.best.report,
+          extra: card.replace(/^## .*\n\n/, ""),
+        });
+        if (pr.action === "skipped") notice(`no pull request. ${pr.reason}`);
+        else {
+          log(`AI Change Guard ${pr.action} pull request #${pr.number}: ${pr.url}`);
+          await summary(`**Savings pull request ${pr.action}:** [#${pr.number}](${pr.url})`);
+        }
+      }
+    }
+    return failed ? 1 : 0;
   }
 
   if (openPr && !(prompts && oldModel && newModel)) {

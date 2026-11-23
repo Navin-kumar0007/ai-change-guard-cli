@@ -747,9 +747,12 @@ function isReroute(requested, served) {
   const b = lastSegment(served);
   return !b.startsWith(a) && !a.startsWith(b);
 }
-function costOfCall(ref, usage, today) {
+function platformForRef(ref) {
   const provider = ref.slice(0, ref.indexOf(":"));
-  const platform = Object.hasOwn(defaultPlatform, provider) ? defaultPlatform[provider] : void 0;
+  return Object.hasOwn(defaultPlatform, provider) ? defaultPlatform[provider] : void 0;
+}
+function costOfCall(ref, usage, today) {
+  const platform = platformForRef(ref);
   const price = platform ? billedPriceOn(modelName(ref), platform, today) : void 0;
   return price ? callCost(price, usage.input, usage.output) : void 0;
 }
@@ -1115,6 +1118,204 @@ async function postSlack(webhookUrl, message, fetchImpl = fetch) {
   });
   if (!res.ok)
     throw new Error(`Slack answered ${res.status}.`);
+}
+
+// packages/replay/dist/fallback.js
+function plannedFallbackCalls(items, runs, candidates3) {
+  return plannedCalls(items, runs, 1) * (1 + candidates3);
+}
+function cleanCandidates(primary, candidates3) {
+  return [...new Set(candidates3.map((c) => c.trim()).filter(Boolean))].filter((c) => c !== primary);
+}
+var ANY_RUN = 0.01;
+async function testFallbacks(options) {
+  const { primary, client } = options;
+  const runs = options.runs ?? 3;
+  const maxCalls = options.maxCalls ?? 500;
+  parseModelRef(primary);
+  const candidates3 = cleanCandidates(primary, options.candidates);
+  candidates3.forEach((c) => parseModelRef(c));
+  if (candidates3.length === 0)
+    throw new Error("Give at least one candidate model that differs from the primary.");
+  const planned = plannedFallbackCalls(options.items.length, runs, candidates3.length);
+  if (planned > maxCalls) {
+    throw new SpendCapError(`Testing ${candidates3.length} candidates needs ${planned} calls, above the limit of ${maxCalls}. Use fewer candidates or runs, or raise the limit.`);
+  }
+  const common = { client, runs, ...options.concurrency ? { concurrency: options.concurrency } : {}, ...options.signal ? { signal: options.signal } : {} };
+  const primaryRecords = await runReplay({ ...common, items: options.items, oldModel: primary, newModel: primary, sides: ["old"], maxCalls });
+  const answered = new Set(primaryRecords.filter((r) => r.response).map((r) => r.itemId));
+  if (answered.size === 0) {
+    throw new Error(`${primary} did not answer any prompt (${primaryRecords[0]?.error ?? "no calls"}). Fix that first: backups are judged against its answers.`);
+  }
+  const items = options.items.filter((i) => answered.has(i.id));
+  const skippedPrompts = options.items.filter((i) => !answered.has(i.id)).map((i) => i.id);
+  const perCandidate = plannedCalls(items.length, runs, 1);
+  const results = await Promise.all(candidates3.map(async (model) => {
+    const records = await runReplay({ ...common, items, oldModel: primary, newModel: model, sides: ["new"], maxCalls: perCandidate });
+    const report = buildReplayReport(items, [...primaryRecords, ...records], { oldModel: primary, newModel: model, runs, judge: { share: ANY_RUN }, ...options.today ? { today: options.today } : {} });
+    const t = report.totals;
+    const rerouted = report.reroutes.filter((r) => r.side === "new");
+    const reason = records.length > 0 && records.every((r) => r.error) ? `every call failed: ${(records[0].error ?? "").slice(0, 120)}` : rerouted.length > 0 ? `served as ${rerouted.map((r) => r.served).join(", ")}, not the model requested` : t.broken > 0 ? `${t.broken} prompt${t.broken === 1 ? "" : "s"} broken in at least one run` : t.error > 0 ? `${t.error} prompt${t.error === 1 ? "" : "s"} could not be compared` : void 0;
+    return { model, report, qualifies: !reason, ...reason ? { reason } : {}, calls: records.length };
+  }));
+  const fallbacks = results.filter((r) => r.qualifies).sort((a, b) => a.report.totals.changed - b.report.totals.changed || a.report.avgLatencyMs.new - b.report.avgLatencyMs.new).map((r) => r.model);
+  return {
+    primary,
+    runs,
+    calls: primaryRecords.length + results.reduce((n, r) => n + r.calls, 0),
+    candidates: results.map(({ calls: _calls, ...r }) => r),
+    fallbacks,
+    skippedPrompts
+  };
+}
+
+// packages/replay/dist/savings.js
+var MAX_CHANGED_SHARE = 0.02;
+var MIN_SAVING = 0.05;
+var PRICE_HORIZON_DAYS = 60;
+var RETIREMENT_DAYS = 90;
+var DEFAULT_TOKENS = { input: 1e3, output: 250 };
+function addDays(date, days) {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + days * 864e5).toISOString().slice(0, 10);
+}
+function steadyPrice(id, platform, today) {
+  const now = billedPriceOn(id, platform, today);
+  const later = billedPriceOn(id, platform, addDays(today, PRICE_HORIZON_DAYS));
+  if (!now || !later)
+    return void 0;
+  return { input: Math.max(now.input, later.input), output: Math.max(now.output, later.output) };
+}
+function candidateProblem(ref, today) {
+  const platform = platformForRef(ref);
+  const id = modelName(ref);
+  if (!platform)
+    return "not priced in the catalog (a gateway or unknown provider)";
+  if (/preview/.test(id))
+    return "a preview model";
+  if (/-\d{8}$|-\d{4}-\d{2}-\d{2}$/.test(id))
+    return "a dated snapshot ID; test its alias instead";
+  const retiring = lookupModel(id).find((m) => m.platform === platform && m.retiresOn <= addDays(today, RETIREMENT_DAYS));
+  if (retiring)
+    return `${retiring.reroutesTo ? "reroutes" : "retires"} on ${retiring.retiresOn}`;
+  if (!steadyPrice(id, platform, today))
+    return "its price two months from now is not known";
+  return void 0;
+}
+function steadyCost(ref, tokens, today) {
+  const platform = platformForRef(ref);
+  const price = platform ? steadyPrice(modelName(ref), platform, today) : void 0;
+  return price ? callCost(price, tokens.input, tokens.output) : void 0;
+}
+function cheaperCandidates(primary, today, options = {}) {
+  const { provider } = parseModelRef(primary);
+  const platform = platformForRef(primary);
+  if (!platform)
+    return [];
+  const id = modelName(primary);
+  const tokens = options.tokens ?? DEFAULT_TOKENS;
+  const current = steadyPrice(id, platform, today) ?? billedPriceOn(id, platform, today);
+  if (!current)
+    return [];
+  const currentCost = callCost(current, tokens.input, tokens.output);
+  const out = [];
+  for (const p of prices) {
+    if (p.platform !== platform || p.id === id)
+      continue;
+    if (candidateProblem(`${provider}:${p.id}`, today))
+      continue;
+    const price = steadyPrice(p.id, platform, today);
+    const ratio = tokenRatio({ id, platform }, { id: p.id, platform });
+    const cost = callCost(price, tokens.input * ratio, tokens.output * ratio);
+    if (cost <= currentCost * (1 - MIN_SAVING))
+      out.push({ ref: `${provider}:${p.id}`, costPerCall: cost });
+  }
+  return out.sort((a, b) => b.costPerCall - a.costPerCall).slice(0, options.count ?? 2);
+}
+async function findSavings(options) {
+  const today = options.today ?? localToday();
+  const runs = options.runs ?? 3;
+  const asked = options.candidates ?? cheaperCandidates(options.primary, today).map((c) => c.ref);
+  const excluded = asked.flatMap((model) => {
+    const reason = candidateProblem(model, today);
+    return reason ? [{ model, reason }] : [];
+  });
+  const candidates3 = asked.filter((m) => !excluded.some((e) => e.model === m));
+  const base = { primary: options.primary, runs, excluded, ...options.callsPerMonth !== void 0 ? { callsPerMonth: options.callsPerMonth } : {} };
+  if (candidates3.length === 0)
+    return { ...base, calls: 0, candidates: [], skippedPrompts: [] };
+  const tested = await testFallbacks({
+    items: options.items,
+    primary: options.primary,
+    candidates: candidates3,
+    client: options.client,
+    runs,
+    ...options.concurrency ? { concurrency: options.concurrency } : {},
+    ...options.maxCalls ? { maxCalls: options.maxCalls } : {},
+    ...options.signal ? { signal: options.signal } : {},
+    today
+  });
+  const results = tested.candidates.map((c) => {
+    const compared = c.report.items.length || 1;
+    const changedShare = c.report.totals.changed / compared;
+    const current = steadyCost(options.primary, c.report.avgTokens.old, today) ?? c.report.costPerCall?.old;
+    const candidate = steadyCost(c.model, c.report.avgTokens.new, today);
+    const priced = current !== void 0 && candidate !== void 0 && c.report.comparedPrompts > 0 ? { current, candidate } : void 0;
+    const savingShare = priced && priced.current > 0 ? 1 - priced.candidate / priced.current : void 0;
+    const reason = c.reason ?? (changedShare > MAX_CHANGED_SHARE ? `${c.report.totals.changed} of ${compared} prompts answered differently (more than ${Math.round(MAX_CHANGED_SHARE * 100)}%)` : !priced || savingShare === void 0 ? "no list price known for one of the two models" : savingShare < 0 ? `costs more on your prompts (+${Math.round(-savingShare * 100)}% per call)` : savingShare < MIN_SAVING ? `only ${Math.round(savingShare * 100)}% cheaper on your prompts` : void 0);
+    return {
+      model: c.model,
+      qualifies: !reason,
+      ...reason ? { reason } : {},
+      report: c.report,
+      changedShare,
+      ...priced ? { costPerCall: priced } : {},
+      ...savingShare !== void 0 ? { savingShare } : {},
+      ...priced && options.callsPerMonth !== void 0 ? { monthlySaving: (priced.current - priced.candidate) * options.callsPerMonth } : {}
+    };
+  });
+  const best = results.filter((r) => r.qualifies).sort((a, b) => (b.savingShare ?? 0) - (a.savingShare ?? 0))[0];
+  return { ...base, calls: tested.calls, candidates: results, skippedPrompts: tested.skippedPrompts, ...best ? { best } : {} };
+}
+function usd(amount) {
+  return amount >= 100 ? `$${Math.round(amount).toLocaleString("en-US")}` : formatUsd(amount);
+}
+function verdictLine(c) {
+  const t = c.report.totals;
+  return `${t.same} same \xB7 ${t.changed} changed \xB7 ${t.broken} broken on ${c.report.items.length} prompts`;
+}
+function savingText(c) {
+  if (!c.costPerCall || c.savingShare === void 0)
+    return "";
+  const pct = Math.round(c.savingShare * 100);
+  const month = c.monthlySaving !== void 0 ? `, about ${usd(c.monthlySaving)} a month` : "";
+  return `${pct}% cheaper per call (${usd(c.costPerCall.current)} \u2192 ${usd(c.costPerCall.candidate)})${month}`;
+}
+function skippedNote(result) {
+  const n = result.skippedPrompts.length;
+  return n ? `${result.primary} did not answer ${n} prompt${n === 1 ? "" : "s"} (${result.skippedPrompts.slice(0, 5).join(", ")}${n > 5 ? ", ..." : ""}), so ${n === 1 ? "it was" : "they were"} not compared.` : void 0;
+}
+function formatSavingsMarkdown(result) {
+  const out = [`## Money-Finder: \`${result.primary}\``, ""];
+  if (result.candidates.length === 0) {
+    return [...out, "No cheaper model on the same provider to test.", ...result.excluded.map((e) => `- Not tested: \`${e.model}\`: ${e.reason}`)].join("\n");
+  }
+  if (result.best) {
+    out.push(`**Switch to \`${result.best.model}\`: ${savingText(result.best)}.**`, "", `On your real prompts: ${verdictLine(result.best)}, ${result.runs} runs each.`);
+  } else {
+    out.push("**No cheaper model answered your prompts the same way.** Keep the model you have.");
+  }
+  out.push("", "| Candidate | Result | Cost per call |", "| --- | --- | --- |");
+  for (const c of result.candidates) {
+    const cost = c.costPerCall ? `${usd(c.costPerCall.current)} \u2192 ${usd(c.costPerCall.candidate)}` : "unknown";
+    out.push(`| \`${c.model}\` | ${c.qualifies ? `Passes: ${verdictLine(c)}` : `Skipped: ${c.reason}`} | ${cost} |`);
+  }
+  for (const e of result.excluded)
+    out.push(`| \`${e.model}\` | Not tested: ${e.reason} | |`);
+  const skipped = skippedNote(result);
+  if (skipped)
+    out.push("", `> **Warning:** ${skipped}`);
+  out.push("", "List prices at the higher of today's and the price two months out; no batch, cache or volume discounts.");
+  return out.join("\n");
 }
 
 // packages/scanner/dist/detect.js
@@ -2847,7 +3048,7 @@ function code2(text) {
 function listed(items, render, more) {
   return [...items.slice(0, MAX_LISTED).map(render), ...items.length > MAX_LISTED ? [`- \u2026and ${items.length - MAX_LISTED} more ${more}`] : []];
 }
-function evidenceBody(plan, replay, scanPath, note) {
+function evidenceBody(plan, replay, scanPath, note, extra) {
   const where = (file, line) => `\`${posix.join(scanPath || ".", file)}:${line}\``;
   const t = replay.totals;
   const prompts = replay.items.length;
@@ -2855,6 +3056,7 @@ function evidenceBody(plan, replay, scanPath, note) {
     ...note ? [`> ${note}`, ""] : [],
     `## Switch \`${plan.from}\` to \`${plan.to}\``,
     "",
+    ...extra ? [extra, ""] : [],
     `Before opening this pull request, AI Change Guard replayed **${prompts} of your real prompt${prompts === 1 ? "" : "s"}** ${replay.runs} time${replay.runs === 1 ? "" : "s"} each on \`${replay.oldModel}\` and \`${replay.newModel}\`.`,
     "",
     "| Same | Changed | Broken | Errors |",
@@ -2942,7 +3144,7 @@ async function openEvidencePr(input2) {
   const message = `${subject}
 
 Replayed ${replay.items.length} prompt${replay.items.length === 1 ? "" : "s"} x ${replay.runs} run${replay.runs === 1 ? "" : "s"} with AI Change Guard: ${t.same} same, ${t.changed} changed, ${t.broken} broken.`;
-  const body = evidenceBody(plan, replay, input2.scanPath);
+  const body = evidenceBody(plan, replay, input2.scanPath, void 0, input2.extra);
   const listPulls = () => api("GET", `/repos/${repo}/pulls?state=all&per_page=20&head=${encodeURIComponent(`${owner}:${branch}`)}`);
   const ownsBranch = async () => {
     const cmp = await api(
@@ -2968,7 +3170,7 @@ Replayed ${replay.items.length} prompt${replay.items.length === 1 ? "" : "s"} x 
       await api("PATCH", `/repos/${repo}/git/refs/heads/${branch}`, { sha: await commit(), force: true });
     }
     const note = owned ? void 0 : `People have added commits to this branch, so AI Change Guard no longer changes its code. The lists below describe ${base} today.`;
-    await api("PATCH", `/repos/${repo}/pulls/${pr.number}`, { body: owned ? body : evidenceBody(plan, replay, input2.scanPath, note) });
+    await api("PATCH", `/repos/${repo}/pulls/${pr.number}`, { body: owned ? body : evidenceBody(plan, replay, input2.scanPath, note, input2.extra) });
     return { action: "updated", number: pr.number, url: pr.html_url };
   };
   try {
@@ -3094,6 +3296,64 @@ ${check.summary}`);
     const t = watch.report.totals;
     log(`${watch.alert ? "::error::" : ""}AI Change Guard watch: ${t.same} same, ${t.changed} changed, ${t.broken} broken${watch.reroutes.length ? `, rerouted to ${watch.reroutes.map((r) => r.served).join(", ")}` : ""}`);
     return failed || watch.alert ? 1 : 0;
+  }
+  if (oneOf(input("find-savings", env) || "false", "find-savings", ["true", "false"]) === "true") {
+    if (!prompts || !oldModel) throw new Error('find-savings needs "prompts" and "old-model" (the model you use now).');
+    if (newModel) throw new Error('find-savings picks the new model itself: remove "new-model", or run the replay in a separate step.');
+    const candidatesInput = input("candidates", env);
+    const candidates3 = candidatesInput ? cleanCandidates(oldModel, candidatesInput.split(",")) : cheaperCandidates(oldModel, today).map((c) => c.ref);
+    if (candidatesInput && candidates3.length === 0) throw new Error('"candidates" needs at least one model other than "old-model".');
+    const plans = /* @__PURE__ */ new Map();
+    if (openPr) {
+      for (const c of candidates3) {
+        if (candidateProblem(c, today)) continue;
+        const ids = switchIds(oldModel, c);
+        plans.set(c, await planSwitch(scanRoot, scan.findings, ids.from, ids.to, ids.prefix ? { prefix: ids.prefix } : {}));
+      }
+    }
+    const callsInput = input("calls-per-month", env);
+    const llm = client ?? withRetry(createClient({ env }));
+    const result = await findSavings({
+      candidates: candidates3,
+      items: await loadGoldenSet(resolve(workspace, prompts)),
+      primary: oldModel,
+      client: llm,
+      runs: positive(input("runs", env) || "3", "runs"),
+      concurrency: positive(input("concurrency", env) || "2", "concurrency"),
+      maxCalls: positive(input("max-calls", env) || "300", "max-calls"),
+      today,
+      ...callsInput ? { callsPerMonth: positive(callsInput, "calls-per-month") } : {}
+    });
+    const card = formatSavingsMarkdown(result);
+    await summary(card);
+    log(result.best ? `AI Change Guard Money-Finder: ${result.best.model} passes and is ${Math.round((result.best.savingShare ?? 0) * 100)}% cheaper per call` : "AI Change Guard Money-Finder: no cheaper model passed");
+    if (openPr && result.best) {
+      const plan = plans.get(result.best.model);
+      const notice = (text) => log(`::notice::AI Change Guard: ${text}`);
+      if (result.skippedPrompts.length > 0) notice(`no pull request, because ${oldModel} did not answer ${result.skippedPrompts.length} prompt(s), so the comparison is incomplete.`);
+      else if (plan.edits.length === 0) notice(`no pull request, because no code uses ${plan.from} as a plain model ID.`);
+      else {
+        const token = input("github-token", env) || env.GITHUB_TOKEN || "";
+        if (!github && !token) throw new Error('open-pr needs a token: keep the default "github-token" input or pass one.');
+        const pr = await openEvidencePr({
+          api: github ?? githubApi(token, env.GITHUB_API_URL),
+          repo: env.GITHUB_REPOSITORY ?? "",
+          ref: env.GITHUB_REF ?? "",
+          sha: env.GITHUB_SHA ?? "",
+          workspace,
+          scanPath: relative2(workspace, scanRoot).split(sep2).join("/"),
+          plan,
+          replay: result.best.report,
+          extra: card.replace(/^## .*\n\n/, "")
+        });
+        if (pr.action === "skipped") notice(`no pull request. ${pr.reason}`);
+        else {
+          log(`AI Change Guard ${pr.action} pull request #${pr.number}: ${pr.url}`);
+          await summary(`**Savings pull request ${pr.action}:** [#${pr.number}](${pr.url})`);
+        }
+      }
+    }
+    return failed ? 1 : 0;
   }
   if (openPr && !(prompts && oldModel && newModel)) {
     throw new Error('open-pr needs a replay as proof: set "prompts", "old-model" and "new-model".');

@@ -9,6 +9,7 @@ AI providers retire models on a schedule. When a model you call is retired, requ
 - **Prompt Repair:** when the new model breaks your JSON format, finds a prompt change that fixes it and proves it with a re-test.
 - **Nightly watch:** asks the model you already use again every night and compares with a committed baseline, so a silent model update or a reroute to another model reaches you as one alert (job failure, email, Slack) instead of as broken answers in production.
 - **Tested fallbacks:** `fallback` replays your golden set on backup models and writes a LiteLLM or OpenRouter fallback config with only the ones that broke nothing, so an outage switches to a model you know works.
+- **Money-Finder:** `save` replays your golden set on the nearest cheaper models of the same provider and recommends one only if nothing broke and at most 2% of answers changed, with the saving per call and per month measured on your own prompts. The Action can open the switch pull request with the savings card.
 - **Switch:** once the replay passes, changes the model ID across your code, or opens a pull request with the replay report as proof.
 - **AI security check:** flags AI-specific mistakes with zero AI calls: AI keys in code or the browser, model output passed to eval, a shell, SQL or raw HTML, user input inside the system prompt, agent tools that delete, pay or send without a confirmation step, and unpinned MCP servers (mapped to the OWASP Top 10 for LLM and agentic apps; advisory, never a guarantee).
 - **AI package guard:** reads your lockfiles and manifests (npm, pnpm, yarn, pip, Poetry, uv, Pipenv) and flags AI SDK, agent and MCP releases that were published with malicious code, such as litellm 1.82.7, 1.82.8 and 1.107.0, mistralai 2.4.6, guardrails-ai 0.10.1 and @mastra/core 1.42.1, each with its OSV advisory. With `--online` it also asks OSV for newer advisories, and npm or PyPI whether AI-sounding packages exist and how old they are: an invented or days-old name is a sign of a fake package.
@@ -69,6 +70,20 @@ node packages/scanner/dist/cli.js replay --set prompts.jsonl --old openai:gpt-4o
 Every prompt gets a verdict: same, changed, broken, or could not compare, with the reason. A spend cap (`--max-calls`, default 500) stops a run before it starts if it would make too many calls. Providers: OpenAI, Anthropic, Google Gemini, Groq, OpenRouter, Mistral and Ollama.
 
 **Prompt Repair:** add `--repair`. When the new model breaks a prompt's JSON format (prose around the JSON, code fences, schema misses), AI Change Guard tries fixed, readable changes on the new model only: a JSON-only instruction in the system prompt (with your schema), then that plus the provider's JSON mode. Each try is re-tested with the same rules, and the first one that passes is shown as the exact change to make. `--repaired-set fixed.jsonl` writes your golden set with the working fixes applied, so you can re-run it. Repair calls come out of the same `--max-calls` budget; `--repaired-set` writes a new file with prompts only, without comments or extra fields.
+
+## Money-Finder: a cheaper model that answers the same way
+
+```sh
+node packages/scanner/dist/cli.js save --set golden.jsonl --model openai:gpt-5.5 --calls-per-month 100000
+```
+
+```
+SAVE  openai:gpt-5.5 → openai:gpt-5.4: 50% cheaper per call ($0.011 → $0.0055), about $550 a month
+      25 same · 0 changed · 0 broken on 25 prompts (3 runs each)
+      Switch: ai-change-guard switch . --from gpt-5.5 --to gpt-5.4 --write
+```
+
+Without `--candidates`, it tests the two nearest cheaper models on the same provider, so the same API key works. Previews, dated snapshot IDs and models retiring within 90 days are skipped. Prices are taken at the higher of today and two months from now, so an introductory price that is about to end can't win. A candidate passes only with nothing broken and at most 2% of prompts answered differently. The cost per call uses the tokens measured in the replay, so a tokenizer that uses more tokens is counted. `--log ai-calls.jsonl` takes the monthly volume from the recorder. Cost: prompts × runs × (1 + candidates) calls.
 
 ## Backup models for an outage
 

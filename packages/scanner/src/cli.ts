@@ -26,13 +26,18 @@ import {
   openrouterConfig,
   plannedFallbackCalls,
   testFallbacks,
+  cheaperCandidates,
+  findSavings,
+  formatSavingsMarkdown,
+  formatSavingsText,
+  platformForRef,
   loadGoldenSet,
   plannedCalls,
   runReplayJob,
 } from "@ai-change-guard/replay";
 import { addOnlinePackageChecks, buildReport, formatText, localToday } from "./report.js";
 import { describeCost, formatUsd } from "./costs.js";
-import { estimateImpact, usageFromLog, type ImpactSummary, type ModelUsage } from "./impact.js";
+import { estimateImpact, logDays, usageFromLog, type ImpactSummary, type ModelUsage } from "./impact.js";
 import { findPrompts } from "./prompts.js";
 import { scanDirectory } from "./scan.js";
 import { applySwitch, planSwitch } from "./switch.js";
@@ -50,6 +55,7 @@ const USAGE = `Usage:
   ai-change-guard baseline --set golden.jsonl --model provider:model --out golden.baseline.json [--runs N]
   ai-change-guard watch --set golden.jsonl --baseline golden.baseline.json [--runs N] [--slack-webhook-env NAME]
   ai-change-guard fallback --set golden.jsonl --model provider:model --candidates a,b,c [--format litellm|openrouter] [--out FILE]
+  ai-change-guard save --set golden.jsonl --model provider:model [--calls-per-month N | --log ai-calls.jsonl] [--candidates a,b]
   ai-change-guard cost [folder] --log ai-calls.jsonl [--sample 0.2] | --calls N --input-tokens N --output-tokens N [--model ID]
 
 Scan options:
@@ -95,6 +101,15 @@ Fallback (tested backup models for an outage):
   --candidates LIST           provider:model,... to test against your --model on the golden set
   --format litellm|openrouter Config to write (default litellm); only candidates with nothing broken go in
   --runs N                    Runs per prompt (default 3)
+
+Save options (Money-Finder: a cheaper model that answers your prompts the same way):
+  --model provider:model      The model you use now
+  --candidates LIST           provider:model,... to test (default: the 2 nearest cheaper models on the same provider)
+  --calls-per-month N         Your volume, for the monthly saving; or --log ai-calls.jsonl [--sample SHARE]
+  --runs N                    Runs per prompt (default 3)
+  --json | --markdown         Report format (default: text)
+  A candidate passes with nothing broken and at most 2% of prompts answered differently.
+  Exits with code 1 when no cheaper model passed.
 
 Cost options (what announced price changes do to your monthly bill):
   --log FILE                  The recorder's ai-calls.jsonl: call volume and tokens per model, scaled to 30 days
@@ -506,6 +521,71 @@ export function formatImpact(summary: ImpactSummary): string {
   return out.join("\n");
 }
 
+async function saveCommand(args: string[]): Promise<number> {
+  const f = parseFlags(args, {
+    "--model": "value",
+    "--candidates": "value",
+    "--calls-per-month": "int",
+    "--log": "value",
+    "--sample": "value",
+    "--today": "value",
+    "--json": "bool",
+    "--markdown": "bool",
+  });
+  const set = str(f, "--set");
+  const model = str(f, "--model");
+  if (!set || !model) throw new UsageError("save needs --set and --model.");
+  modelRefOrUsage(model, "--model");
+  const today = str(f, "--today") ?? localToday();
+  if (!DATE_RE.test(today)) throw new UsageError("--today must look like 2026-11-17");
+  const given = str(f, "--candidates");
+  const candidates = given ? cleanCandidates(model, given.split(",")) : cheaperCandidates(model, today).map((c) => c.ref);
+  if (given && candidates.length === 0) throw new UsageError("--candidates needs at least one model other than --model.");
+  for (const c of candidates) modelRefOrUsage(c, "--candidates");
+  if (candidates.length === 0) {
+    console.log(formatSavingsText({ primary: model, runs: 0, calls: 0, candidates: [], excluded: [], skippedPrompts: [] }));
+    return 1;
+  }
+
+  let callsPerMonth = f["--calls-per-month"] as number | undefined;
+  const log = str(f, "--log");
+  if (log && callsPerMonth !== undefined) throw new UsageError("Use either --log or --calls-per-month, not both.");
+  if (log) {
+    const sample = parseSample(str(f, "--sample"));
+    // Calls to this model on its own platform, scaled over the days this model appears in the log.
+    const id = model.slice(model.indexOf(":") + 1).replace(/^models\//, "");
+    const platform = platformForRef(model);
+    const mine = usageFromLog(await readFile(resolve(log), "utf8")).filter((u) => u.model === id && (!u.platform || !platform || u.platform === platform));
+    if (mine.length === 0) console.error(`${log} has no calls to ${model}; the monthly saving is left out.`);
+    else callsPerMonth = Math.round((mine.reduce((n, u) => n + u.calls, 0) / sample) * (30 / (logDays(mine) ?? 30)));
+  }
+
+  const runs = int(f, "--runs", 3);
+  const items = await loadGoldenSet(resolve(set));
+  console.error(`${plannedFallbackCalls(items.length, runs, candidates.length)} calls on your API key (${model} once, then ${candidates.join(", ")}).`);
+  const result = await findSavings({
+    items,
+    primary: model,
+    candidates,
+    client: withRetry(createClient()),
+    runs,
+    today,
+    maxCalls: int(f, "--max-calls", 500),
+    concurrency: int(f, "--concurrency", 2),
+    ...(callsPerMonth !== undefined ? { callsPerMonth } : {}),
+  });
+  console.log(f["--json"] ? JSON.stringify(result, null, 2) : f["--markdown"] ? formatSavingsMarkdown(result) : formatSavingsText(result, { volumeHint: !log }));
+  // Like fallback: 0 when a cheaper model passed, 1 when none did.
+  return result.best ? 0 : 1;
+}
+
+/** The recorder's sample setting: a share above 0 and at most 1 (default 1). */
+function parseSample(text: string | undefined): number {
+  const sample = text === undefined ? 1 : Number(text);
+  if (!(sample > 0 && sample <= 1)) throw new UsageError("--sample must be a number above 0 and at most 1, e.g. 0.2");
+  return sample;
+}
+
 async function costCommand(args: string[]): Promise<number> {
   // The folder, when given, comes first: cost ./my-app --log ai-calls.jsonl
   const folder = args[0] && !args[0].startsWith("-") ? args[0] : undefined;
@@ -525,9 +605,7 @@ async function costCommand(args: string[]): Promise<number> {
   const calls = f["--calls"] as number | undefined;
   if (!log && calls === undefined) throw new UsageError("cost needs --log ai-calls.jsonl, or --calls with --input-tokens and --output-tokens.");
   if (log && calls !== undefined) throw new UsageError("Use either --log or --calls, not both.");
-  const sampleText = str(f, "--sample");
-  const sample = sampleText === undefined ? 1 : Number(sampleText);
-  if (!(sample > 0 && sample <= 1)) throw new UsageError("--sample must be a number above 0 and at most 1, e.g. 0.2");
+  const sample = parseSample(str(f, "--sample"));
 
   const report = folder ? buildReport(await scanDirectory(resolve(folder)), folder, today) : undefined;
   const platformFor = (model: string) => report?.models.find((m) => m.id === model)?.platform;
@@ -612,6 +690,7 @@ async function main(argv: string[]): Promise<number> {
   if (command === "watch") return watchCommand(rest);
   if (command === "fallback") return fallbackCommand(rest);
   if (command === "cost") return costCommand(rest);
+  if (command === "save") return saveCommand(rest);
   if (command !== "scan") throw new UsageError(command ? `Unknown command: ${command}` : "Missing command.");
 
   const options = parseArgs(rest);

@@ -225,6 +225,38 @@ describe("evidence pull request", () => {
     await expect(runWithPr(api)).rejects.toThrow(/Allow GitHub Actions to create and approve pull requests/);
   });
 
+  it("Money-Finder opens the switch PR to the cheaper model that passed, with the savings card", async () => {
+    const { api, calls } = fakeGitHub();
+    const { code, lines, summary } = await runWithPr(api, { inputs: { "find-savings": "true", "new-model": "", candidates: "openai:gpt-6-luna", "calls-per-month": "10000" } });
+    expect(code).toBe(0);
+    expect(summary).toContain("## Money-Finder: `openai:gpt-4o`");
+    expect(lines).toContain("AI Change Guard Money-Finder: openai:gpt-6-luna passes and is 95% cheaper per call");
+    const body = prBody(calls);
+    expect(body).toContain("**Switch to `openai:gpt-6-luna`: 95% cheaper per call");
+    expect(body).toContain("a month");
+    expect(body).not.toContain("## Money-Finder");
+  });
+
+  it("Money-Finder opens nothing when no cheaper model passes", async () => {
+    const { api, calls } = fakeGitHub();
+    const breaksOnLuna: LlmClient = async (req) => ({ text: req.model.endsWith("gpt-6-luna") ? "no json" : '{"ok": true}', toolCalls: [], inputTokens: 10, outputTokens: 5, latencyMs: 1, refused: false });
+    const { lines } = await runWithPr(api, { client: breaksOnLuna, inputs: { "find-savings": "true", "new-model": "", candidates: "openai:gpt-6-luna" } });
+    expect(lines).toContain("AI Change Guard Money-Finder: no cheaper model passed");
+    expect(writes(calls)).toEqual([]);
+  });
+
+  it("Money-Finder refuses another provider's candidate, or a new-model, before any paid call", async () => {
+    const { api } = fakeGitHub();
+    let calls = 0;
+    const counting: LlmClient = async (req) => {
+      calls++;
+      return passing(req);
+    };
+    await expect(runWithPr(api, { client: counting, inputs: { "find-savings": "true", "new-model": "", candidates: "anthropic:claude-haiku-5-5" } })).rejects.toThrow(/within one provider/);
+    await expect(runWithPr(api, { client: counting, inputs: { "find-savings": "true", candidates: "openai:gpt-6-luna" } })).rejects.toThrow(/remove "new-model"/);
+    expect(calls).toBe(0);
+  });
+
   it("checks the inputs before spending any calls", async () => {
     const { api } = fakeGitHub();
     await expect(runWithPr(api, { inputs: { prompts: "" } })).rejects.toThrow(/open-pr needs a replay/);

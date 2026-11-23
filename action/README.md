@@ -130,6 +130,9 @@ How it behaves:
 | --- | --- | --- |
 | `path` | `.` | Folder to scan |
 | `fail-on` | `retired` | Fail when a model or API is `retired`, `retiring` (within 90 days), or `none`. A malicious AI package release in a lockfile fails unless `none` |
+| `find-savings` | `false` | `true` runs Money-Finder on `old-model`: replays `prompts` on cheaper models of the same provider and writes the savings card to the Summary. With `open-pr: true`, opens the switch pull request to the cheaper model that passed |
+| `candidates` | | Models for `find-savings`, comma-separated `provider:model` (default: the 2 nearest cheaper ones in the catalog) |
+| `calls-per-month` | | Your monthly calls to `old-model`, for the monthly saving in the savings card |
 | `online-package-check` | `false` | `true` also checks AI packages online: OSV malicious-code advisories, and npm / PyPI for AI-sounding names that don't exist or are brand new. Sends package names and versions, never code |
 | `prompts` | | Golden set (JSONL) for a replay |
 | `old-model`, `new-model` | | `provider:model` |
