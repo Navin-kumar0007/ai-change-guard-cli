@@ -78,6 +78,8 @@ export function cheaperCandidates(primary: string, today: string, options: { tok
   const out: Candidate[] = [];
   for (const p of prices) {
     if (p.platform !== platform || p.id === id) continue;
+    // Closed to new API users: most accounts would get a 404. Name it with --candidates if yours has access.
+    if (p.availability === "existing-users") continue;
     if (candidateProblem(`${provider}:${p.id}`, today)) continue;
     const price = steadyPrice(p.id, platform, today)!;
     const ratio = tokenRatio({ id, platform }, { id: p.id, platform });
@@ -163,8 +165,11 @@ export async function findSavings(options: SavingsOptions): Promise<SavingsResul
     const candidate = steadyCost(c.model, c.report.avgTokens.new, today);
     const priced = current !== undefined && candidate !== undefined && c.report.comparedPrompts > 0 ? { current, candidate } : undefined;
     const savingShare = priced && priced.current > 0 ? 1 - priced.candidate / priced.current : undefined;
+    // Say which prompt broke and how, so a skip can be checked by hand.
+    const firstBroken = c.report.items.find((i) => i.verdict === "broken");
+    const brokenDetail = firstBroken ? ` (first: ${firstBroken.id}, ${(firstBroken.reasons[0]?.detail ?? firstBroken.error ?? "").slice(0, 120)})` : "";
     const reason =
-      c.reason ??
+      (c.reason ? `${c.reason}${c.report.totals.broken > 0 ? brokenDetail : ""}` : undefined) ??
       (changedShare > MAX_CHANGED_SHARE
         ? `${c.report.totals.changed} of ${compared} prompts answered differently (more than ${Math.round(MAX_CHANGED_SHARE * 100)}%)`
         : !priced || savingShare === undefined

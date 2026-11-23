@@ -1145,7 +1145,7 @@ async function testFallbacks(options) {
   const primaryRecords = await runReplay({ ...common, items: options.items, oldModel: primary, newModel: primary, sides: ["old"], maxCalls });
   const answered = new Set(primaryRecords.filter((r) => r.response).map((r) => r.itemId));
   if (answered.size === 0) {
-    throw new Error(`${primary} did not answer any prompt (${primaryRecords[0]?.error ?? "no calls"}). Fix that first: backups are judged against its answers.`);
+    throw new Error(`${primary} did not answer any prompt (${primaryRecords[0]?.error ?? "no calls"}). Fix that first: the other models are judged against its answers.`);
   }
   const items = options.items.filter((i) => answered.has(i.id));
   const skippedPrompts = options.items.filter((i) => !answered.has(i.id)).map((i) => i.id);
@@ -1221,6 +1221,8 @@ function cheaperCandidates(primary, today, options = {}) {
   for (const p of prices) {
     if (p.platform !== platform || p.id === id)
       continue;
+    if (p.availability === "existing-users")
+      continue;
     if (candidateProblem(`${provider}:${p.id}`, today))
       continue;
     const price = steadyPrice(p.id, platform, today);
@@ -1261,7 +1263,9 @@ async function findSavings(options) {
     const candidate = steadyCost(c.model, c.report.avgTokens.new, today);
     const priced = current !== void 0 && candidate !== void 0 && c.report.comparedPrompts > 0 ? { current, candidate } : void 0;
     const savingShare = priced && priced.current > 0 ? 1 - priced.candidate / priced.current : void 0;
-    const reason = c.reason ?? (changedShare > MAX_CHANGED_SHARE ? `${c.report.totals.changed} of ${compared} prompts answered differently (more than ${Math.round(MAX_CHANGED_SHARE * 100)}%)` : !priced || savingShare === void 0 ? "no list price known for one of the two models" : savingShare < 0 ? `costs more on your prompts (+${Math.round(-savingShare * 100)}% per call)` : savingShare < MIN_SAVING ? `only ${Math.round(savingShare * 100)}% cheaper on your prompts` : void 0);
+    const firstBroken = c.report.items.find((i) => i.verdict === "broken");
+    const brokenDetail = firstBroken ? ` (first: ${firstBroken.id}, ${(firstBroken.reasons[0]?.detail ?? firstBroken.error ?? "").slice(0, 120)})` : "";
+    const reason = (c.reason ? `${c.reason}${c.report.totals.broken > 0 ? brokenDetail : ""}` : void 0) ?? (changedShare > MAX_CHANGED_SHARE ? `${c.report.totals.changed} of ${compared} prompts answered differently (more than ${Math.round(MAX_CHANGED_SHARE * 100)}%)` : !priced || savingShare === void 0 ? "no list price known for one of the two models" : savingShare < 0 ? `costs more on your prompts (+${Math.round(-savingShare * 100)}% per call)` : savingShare < MIN_SAVING ? `only ${Math.round(savingShare * 100)}% cheaper on your prompts` : void 0);
     return {
       model: c.model,
       qualifies: !reason,

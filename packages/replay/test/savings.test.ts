@@ -127,3 +127,15 @@ describe("review fixes", () => {
     expect(r.candidates[0]?.reason).toBe("costs more on your prompts (+100% per call)");
   });
 });
+
+describe("live test fixes (2026-11-24)", () => {
+  it("does not pick a model closed to new API users", () => {
+    // Live test: gemini-2.5-flash-lite answered HTTP 404 "no longer available to new users".
+    expect(cheaperCandidates("google:gemini-3.5-flash-lite", "2026-11-24").map((c) => c.ref)).toEqual(["google:gemini-3.1-flash-lite"]);
+  });
+
+  it("names the first broken prompt and why", async () => {
+    const r = await findSavings({ items: SET, primary: "openai:gpt-5.5", candidates: ["openai:gpt-6-luna"], client: client([]), runs: 1, today: TODAY });
+    expect(r.candidates[0]?.reason).toMatch(/^1 prompt broken in at least one run \(first: order, .+\)$/);
+  });
+});

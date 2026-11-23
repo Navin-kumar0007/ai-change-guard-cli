@@ -54,6 +54,8 @@ export interface PriceEntry extends TokenPrice {
   cachedInput?: number;
   /** Tokenizer family, when it matters for comparing token counts (see `tokenizers`). */
   tokenizer?: string;
+  /** "existing-users": the provider only lets accounts that used the model before call it. */
+  availability?: "existing-users";
   verified: boolean;
   note?: string;
   sources: Source[];

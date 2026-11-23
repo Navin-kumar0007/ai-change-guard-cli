@@ -74,7 +74,7 @@ export async function testFallbacks(options: FallbackOptions): Promise<FallbackR
   // Without the primary's answers there is nothing to compare a backup with: stop before spending more.
   const answered = new Set(primaryRecords.filter((r) => r.response).map((r) => r.itemId));
   if (answered.size === 0) {
-    throw new Error(`${primary} did not answer any prompt (${primaryRecords[0]?.error ?? "no calls"}). Fix that first: backups are judged against its answers.`);
+    throw new Error(`${primary} did not answer any prompt (${primaryRecords[0]?.error ?? "no calls"}). Fix that first: the other models are judged against its answers.`);
   }
   const items = options.items.filter((i) => answered.has(i.id));
   const skippedPrompts = options.items.filter((i) => !answered.has(i.id)).map((i) => i.id);
