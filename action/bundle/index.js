@@ -1623,11 +1623,14 @@ async function checkPackagesOnline(packages, options) {
       failed++;
     }
   }
-  const newDays = options.newDays ?? 30;
+  const newDays = options.newDays ?? NEW_PACKAGE_DAYS;
   const unknown = packages.filter((p) => !p.known).slice(0, options.maxLookups ?? 30);
   const todayMs = Date.parse(`${options.today}T00:00:00Z`);
   for (let i = 0; i < unknown.length; i += 5) {
     await Promise.all(unknown.slice(i, i + 5).map(async (pkg) => {
+      const scope = pkg.ecosystem === "npm" && pkg.name.startsWith("@") ? pkg.name.split("/")[0] + "/" : void 0;
+      if (pkg.privateIndex || scope !== void 0 && aiPackageMatch("npm", pkg.name) !== "prefix")
+        return;
       let first;
       try {
         first = await firstPublished(fetchFn, pkg, timeoutMs);
@@ -1635,9 +1638,7 @@ async function checkPackagesOnline(packages, options) {
         failed++;
         return;
       }
-      const scope = pkg.ecosystem === "npm" && pkg.name.startsWith("@") ? pkg.name.split("/")[0] + "/" : void 0;
-      const mayBePrivate = pkg.privateIndex || scope !== void 0 && aiPackageMatch("npm", pkg.name) !== "prefix";
-      if (first === "missing" && !mayBePrivate) {
+      if (first === "missing") {
         rows.push({
           ecosystem: pkg.ecosystem,
           name: pkg.name,
@@ -1664,9 +1665,18 @@ async function checkPackagesOnline(packages, options) {
   return { rows, failed };
 }
 var ISSUE_ORDER = { compromised: 0, "not-found": 1, "new-package": 2 };
-function sortPackageRows(rows) {
-  return [...rows].sort((a, b) => ISSUE_ORDER[a.issue] - ISSUE_ORDER[b.issue] || a.name.localeCompare(b.name));
+function packageRowKey(row) {
+  return `${row.ecosystem}|${row.name}|${row.version ?? ""}|${row.issue}`;
 }
+function sortPackageRows(rows) {
+  const byKey = /* @__PURE__ */ new Map();
+  for (const row of [...rows].sort((a, b) => Number(b.source === "catalog") - Number(a.source === "catalog"))) {
+    if (!byKey.has(packageRowKey(row)))
+      byKey.set(packageRowKey(row), row);
+  }
+  return [...byKey.values()].sort((a, b) => ISSUE_ORDER[a.issue] - ISSUE_ORDER[b.issue] || a.name.localeCompare(b.name));
+}
+var NEW_PACKAGE_DAYS = 30;
 function describePackage(row) {
   const what = `${row.name}${row.version ? ` ${row.version}` : ""} (${row.ecosystem})`;
   if (row.issue === "compromised")
@@ -2593,7 +2603,8 @@ function buildReport(result, target, today) {
 }
 async function addOnlinePackageChecks(report, options) {
   const { rows, failed } = await checkPackagesOnline(report.aiPackages ?? [], options);
-  return { ...report, packages: sortPackageRows([...report.packages ?? [], ...rows]), packagesOnline: { checked: true, failed } };
+  const offline = (report.packages ?? []).filter((p) => p.source === "catalog");
+  return { ...report, packages: sortPackageRows([...offline, ...rows]), packagesOnline: { checked: true, failed } };
 }
 
 // packages/scanner/dist/check.js

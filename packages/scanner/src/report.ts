@@ -12,7 +12,7 @@ import {
   type TokenPrice,
 } from "@ai-change-guard/catalog";
 import { buildCostRows, describeCost, formatPrice, type CostRow } from "./costs.js";
-import { aiPackagesOf, checkPackagesOffline, checkPackagesOnline, describePackage, PACKAGE_FIX, sortPackageRows, type AiPackage, type OnlineOptions, type PackageRow } from "./packages.js";
+import { aiPackagesOf, checkPackagesOffline, checkPackagesOnline, describePackage, NEW_PACKAGE_DAYS, PACKAGE_FIX, sortPackageRows, type AiPackage, type OnlineOptions, type PackageRow } from "./packages.js";
 import type { ScanResult } from "./scan.js";
 import { SECURITY_RULES, type SecurityRule } from "./security.js";
 import { TOKEN_RULES, type TokenRule } from "./tokens.js";
@@ -163,9 +163,17 @@ export function refreshReport(report: Report, today: string): Report {
     models,
     apis: report.apis.map((a) => ({ ...a, daysLeft: daysBetween(today, a.date) })),
     costs: costRowsFor(models, today),
-    // Malicious releases added to the catalog since the scan show up too; online findings are kept as found.
+    // Malicious releases added to the catalog since the scan show up too. Online findings are kept until the
+    // next online check replaces them, except a "new package" that is no longer new.
     ...(report.aiPackages
-      ? { packages: sortPackageRows([...checkPackagesOffline(report.aiPackages), ...(report.packages ?? []).filter((p) => p.source !== "catalog")]) }
+      ? {
+          packages: sortPackageRows([
+            ...checkPackagesOffline(report.aiPackages),
+            ...(report.packages ?? []).filter(
+              (p) => p.source !== "catalog" && !(p.issue === "new-package" && p.date && daysBetween(p.date, today) >= NEW_PACKAGE_DAYS),
+            ),
+          ]),
+        }
       : {}),
   };
 }
@@ -296,10 +304,11 @@ export function buildReport(result: ScanResult, target: string, today: string): 
   };
 }
 
-/** Adds the online package check (OSV advisories, registry existence and age) to a report. */
+/** Adds the online package check (OSV advisories, registry existence and age), replacing any earlier online findings. */
 export async function addOnlinePackageChecks(report: Report, options: OnlineOptions): Promise<Report> {
   const { rows, failed } = await checkPackagesOnline(report.aiPackages ?? [], options);
-  return { ...report, packages: sortPackageRows([...(report.packages ?? []), ...rows]), packagesOnline: { checked: true, failed } };
+  const offline = (report.packages ?? []).filter((p) => p.source === "catalog");
+  return { ...report, packages: sortPackageRows([...offline, ...rows]), packagesOnline: { checked: true, failed } };
 }
 
 /** "uses about 30% more tokens", for a tokenizer ratio. */

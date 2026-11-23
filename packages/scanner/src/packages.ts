@@ -182,12 +182,17 @@ export async function checkPackagesOnline(packages: AiPackage[], options: Online
     }
   }
 
-  const newDays = options.newDays ?? 30;
+  const newDays = options.newDays ?? NEW_PACKAGE_DAYS;
   const unknown = packages.filter((p) => !p.known).slice(0, options.maxLookups ?? 30);
   const todayMs = Date.parse(`${options.today}T00:00:00Z`);
   for (let i = 0; i < unknown.length; i += 5) {
     await Promise.all(
       unknown.slice(i, i + 5).map(async (pkg) => {
+        // A package from a private index, or in an npm scope we don't know as an AI scope (companies publish
+        // their own scoped packages privately), is never looked up: its name stays private, and "missing
+        // from the public registry" would prove nothing.
+        const scope = pkg.ecosystem === "npm" && pkg.name.startsWith("@") ? pkg.name.split("/")[0] + "/" : undefined;
+        if (pkg.privateIndex || (scope !== undefined && aiPackageMatch("npm", pkg.name) !== "prefix")) return;
         let first: string | "missing" | undefined;
         try {
           first = await firstPublished(fetchFn, pkg, timeoutMs);
@@ -195,11 +200,7 @@ export async function checkPackagesOnline(packages: AiPackage[], options: Online
           failed++;
           return;
         }
-        // Missing from the public registry proves nothing for a private index, or for an npm scope we don't
-        // know as an AI scope (companies publish their own scoped packages to private registries).
-        const scope = pkg.ecosystem === "npm" && pkg.name.startsWith("@") ? pkg.name.split("/")[0] + "/" : undefined;
-        const mayBePrivate = pkg.privateIndex || (scope !== undefined && aiPackageMatch("npm", pkg.name) !== "prefix");
-        if (first === "missing" && !mayBePrivate) {
+        if (first === "missing") {
           rows.push({
             ecosystem: pkg.ecosystem,
             name: pkg.name,
@@ -229,9 +230,22 @@ export async function checkPackagesOnline(packages: AiPackage[], options: Online
 
 const ISSUE_ORDER: Record<PackageIssue, number> = { compromised: 0, "not-found": 1, "new-package": 2 };
 
-export function sortPackageRows(rows: PackageRow[]): PackageRow[] {
-  return [...rows].sort((a, b) => ISSUE_ORDER[a.issue] - ISSUE_ORDER[b.issue] || a.name.localeCompare(b.name));
+/** One key per finding: a release (name and version) and what is wrong with it. */
+export function packageRowKey(row: Pick<PackageRow, "ecosystem" | "name" | "version" | "issue">): string {
+  return `${row.ecosystem}|${row.name}|${row.version ?? ""}|${row.issue}`;
 }
+
+/** Sorted, with one row per finding: a release flagged by several advisories, or by OSV and the catalog, shows once (catalog first). */
+export function sortPackageRows(rows: PackageRow[]): PackageRow[] {
+  const byKey = new Map<string, PackageRow>();
+  for (const row of [...rows].sort((a, b) => Number(b.source === "catalog") - Number(a.source === "catalog"))) {
+    if (!byKey.has(packageRowKey(row))) byKey.set(packageRowKey(row), row);
+  }
+  return [...byKey.values()].sort((a, b) => ISSUE_ORDER[a.issue] - ISSUE_ORDER[b.issue] || a.name.localeCompare(b.name));
+}
+
+/** A "new package" finding stops being news after this many days. */
+export const NEW_PACKAGE_DAYS = 30;
 
 /** One line for a person. */
 export function describePackage(row: PackageRow): string {

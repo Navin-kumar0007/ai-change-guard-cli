@@ -14,7 +14,7 @@ export { applySwitch, checkSwitchIds, planSwitch } from "./switch.js";
 export type { SwitchEdit, SwitchOptions, SwitchPlan, SwitchSkip } from "./switch.js";
 export { findSecurityIssues, SECURITY_RULES } from "./security.js";
 export type { SecurityFinding, SecurityRule } from "./security.js";
-export { aiPackagesOf, checkPackagesOffline, checkPackagesOnline, describePackage, looksLikeAiPackage, PACKAGE_FIX } from "./packages.js";
+export { aiPackagesOf, checkPackagesOffline, checkPackagesOnline, describePackage, looksLikeAiPackage, NEW_PACKAGE_DAYS, PACKAGE_FIX, packageRowKey } from "./packages.js";
 export type { AiPackage, OnlineOptions, PackageIssue, PackageRow } from "./packages.js";
 export { isDependencyFile, isLockfile, parseDependencies } from "./deps.js";
 export type { Dependency, Ecosystem } from "./deps.js";

@@ -269,3 +269,31 @@ describe("review fixes", () => {
     expect(rows.map((r) => `${r.version}:${r.advisory}`)).toEqual(["1.82.9:MAL-2026-2144"]);
   });
 });
+
+describe("website review fixes", () => {
+  it("never sends private or unknown-scope names to a public registry", async () => {
+    const calls: string[] = [];
+    const fetchFn = fakeFetch({}, calls);
+    await checkPackagesOnline([pkg({ name: "acme-llm", privateIndex: true }), pkg({ ecosystem: "npm", name: "@acme/llm-kit" })], { fetch: fetchFn, today: "2026-11-23" });
+    expect(calls).toEqual([]);
+  });
+
+  it("shows a release once, even when OSV and the catalog both flag it", async () => {
+    const { sortPackageRows, packageRowKey } = await import("../src/packages.js");
+    const base = { ecosystem: "PyPI" as const, name: "litellm", version: "1.82.8", issue: "compromised" as const, summary: "x", locations: [] };
+    const rows = sortPackageRows([{ ...base, advisory: "MAL-1", source: "osv" }, { ...base, advisory: "PYSEC-2026-2", source: "catalog" }, { ...base, advisory: "MAL-2", source: "osv" }]);
+    expect(rows.map((r) => r.advisory)).toEqual(["PYSEC-2026-2"]);
+    expect(packageRowKey(base)).toBe("PyPI|litellm|1.82.8|compromised");
+  });
+
+  it("replaces earlier online findings on a new online check, and lets a new package age out", async () => {
+    const { refreshReport } = await import("../src/report.js");
+    const base = buildReport({ root: "/x", filesScanned: 1, aiFiles: 0, callSites: 0, findings: [], tokenTips: [], security: [], dependencies: [{ ecosystem: "npm", name: "mcp-server-fresh", file: "package.json", line: 1 }] }, "demo", "2026-11-23");
+    const first = await addOnlinePackageChecks(base, { today: "2026-11-23", fetch: fakeFetch({ "GET https://registry.npmjs.org/mcp-server-fresh": { status: 200, body: { time: { created: "2026-11-20T00:00:00Z" } } } }) });
+    expect(first.packages?.map((p) => p.issue)).toEqual(["new-package"]);
+    const again = await addOnlinePackageChecks(first, { today: "2026-11-24", fetch: fakeFetch({ "GET https://registry.npmjs.org/mcp-server-fresh": { status: 200, body: { time: { created: "2026-11-20T00:00:00Z" } } } }) });
+    expect(again.packages).toHaveLength(1);
+    expect(refreshReport(first, "2026-12-19").packages).toHaveLength(1);
+    expect(refreshReport(first, "2026-12-20").packages).toEqual([]);
+  });
+});
