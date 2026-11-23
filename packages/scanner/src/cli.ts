@@ -21,6 +21,11 @@ import {
   generateStarterSet,
   goldenLine,
   importPrompts,
+  cleanCandidates,
+  litellmConfig,
+  openrouterConfig,
+  plannedFallbackCalls,
+  testFallbacks,
   loadGoldenSet,
   plannedCalls,
   runReplayJob,
@@ -42,6 +47,7 @@ const USAGE = `Usage:
   ai-change-guard starter <folder> --model provider:model --out golden.jsonl [--count N]
   ai-change-guard baseline --set golden.jsonl --model provider:model --out golden.baseline.json [--runs N]
   ai-change-guard watch --set golden.jsonl --baseline golden.baseline.json [--runs N] [--slack-webhook-env NAME]
+  ai-change-guard fallback --set golden.jsonl --model provider:model --candidates a,b,c [--format litellm|openrouter] [--out FILE]
 
 Scan options:
   --json                      Print the report as JSON
@@ -78,6 +84,11 @@ Baseline and watch (is the model you use still answering the same way?):
   --slack-webhook-env NAME    Post an alert to the Slack incoming webhook in this environment variable
   --max-calls N               Refuse to start above this many calls (default 500)
   --concurrency N             Calls in flight at once (default 2; use 1 on free-tier keys)
+
+Fallback (tested backup models for an outage):
+  --candidates LIST           provider:model,... to test against your --model on the golden set
+  --format litellm|openrouter Config to write (default litellm); only candidates with nothing broken go in
+  --runs N                    Runs per prompt (default 3)
 
 Switch options:
   --write                     Change the files (without it, only shows what would change)
@@ -318,28 +329,49 @@ async function starterCommand(args: string[]): Promise<number> {
 }
 
 
-async function baselineCommand(args: string[]): Promise<number> {
-  let set: string | undefined;
-  let model: string | undefined;
-  let out: string | undefined;
-  let runs = 5;
-  let maxCalls = 500;
-  let concurrency = 2;
+type FlagKind = "value" | "int" | "bool";
+type Flags = Record<string, string | number | true | undefined>;
+/** Flags the baseline, watch and fallback commands share. */
+const COMMON_FLAGS: Record<string, FlagKind> = { "--set": "value", "--runs": "int", "--max-calls": "int", "--concurrency": "int" };
+
+function parseFlags(args: string[], extra: Record<string, FlagKind>): Flags {
+  const spec = { ...COMMON_FLAGS, ...extra };
+  const out: Flags = {};
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
-    if (arg === "--set") set = takeValue(args, ++i, arg);
-    else if (arg === "--model") model = takeValue(args, ++i, arg);
-    else if (arg === "--out") out = takeValue(args, ++i, arg);
-    else if (arg === "--runs") runs = positiveInt(takeValue(args, ++i, arg), arg);
-    else if (arg === "--max-calls") maxCalls = positiveInt(takeValue(args, ++i, arg), arg);
-    else if (arg === "--concurrency") concurrency = positiveInt(takeValue(args, ++i, arg), arg);
-    else throw new UsageError(`Unknown option: ${arg}`);
+    const kind = spec[arg];
+    if (!kind) throw new UsageError(`Unknown option: ${arg}`);
+    if (kind === "bool") out[arg] = true;
+    else {
+      const v = takeValue(args, ++i, arg);
+      out[arg] = kind === "int" ? positiveInt(v, arg) : v;
+    }
   }
+  return out;
+}
+
+const str = (flags: Flags, name: string) => flags[name] as string | undefined;
+const int = (flags: Flags, name: string, fallback: number) => (flags[name] as number | undefined) ?? fallback;
+
+function modelRefOrUsage(ref: string, flag: string): void {
+  try {
+    parseModelRef(ref);
+  } catch (error) {
+    throw new UsageError(`${flag}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function baselineCommand(args: string[]): Promise<number> {
+  const f = parseFlags(args, { "--model": "value", "--out": "value" });
+  const set = str(f, "--set");
+  const model = str(f, "--model");
+  const out = str(f, "--out");
   if (!set || !model || !out) throw new UsageError("baseline needs --set, --model and --out.");
-  parseModelRef(model);
+  modelRefOrUsage(model, "--model");
+  const runs = int(f, "--runs", 5);
   const items = await loadGoldenSet(resolve(set));
   console.error(`${items.length} prompts × ${runs} runs on ${model} = ${plannedCalls(items.length, runs, 1)} calls on your API key.`);
-  const baseline = await createBaseline({ items, model, runs, maxCalls, concurrency, client: withRetry(createClient()) });
+  const baseline = await createBaseline({ items, model, runs, maxCalls: int(f, "--max-calls", 500), concurrency: int(f, "--concurrency", 2), client: withRetry(createClient()) });
   await writeFile(resolve(out), JSON.stringify(baseline, null, 2) + "\n");
   const failed = baseline.records.filter((r) => !r.response).length;
   console.log(`Saved ${baseline.records.length - failed} answers for ${items.length} prompts to ${out}${failed ? ` (${failed} calls failed)` : ""}. Commit it next to the golden set.`);
@@ -347,33 +379,19 @@ async function baselineCommand(args: string[]): Promise<number> {
 }
 
 async function watchCommand(args: string[]): Promise<number> {
-  let set: string | undefined;
-  let baselinePath: string | undefined;
-  let runs: number | undefined;
-  let maxCalls = 500;
-  let slackEnv: string | undefined;
-  let concurrency = 2;
-  let format: "text" | "markdown" | "json" = "text";
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]!;
-    if (arg === "--set") set = takeValue(args, ++i, arg);
-    else if (arg === "--baseline") baselinePath = takeValue(args, ++i, arg);
-    else if (arg === "--runs") runs = positiveInt(takeValue(args, ++i, arg), arg);
-    else if (arg === "--max-calls") maxCalls = positiveInt(takeValue(args, ++i, arg), arg);
-    else if (arg === "--concurrency") concurrency = positiveInt(takeValue(args, ++i, arg), arg);
-    else if (arg === "--slack-webhook-env") slackEnv = takeValue(args, ++i, arg);
-    else if (arg === "--json") format = "json";
-    else if (arg === "--markdown") format = "markdown";
-    else throw new UsageError(`Unknown option: ${arg}`);
-  }
+  const f = parseFlags(args, { "--baseline": "value", "--slack-webhook-env": "value", "--json": "bool", "--markdown": "bool" });
+  const set = str(f, "--set");
+  const baselinePath = str(f, "--baseline");
   if (!set || !baselinePath) throw new UsageError("watch needs --set and --baseline.");
+  const slackEnv = str(f, "--slack-webhook-env");
   const webhook = slackEnv ? process.env[slackEnv] : undefined;
   if (slackEnv && !webhook) throw new UsageError(`${slackEnv} is not set; put the Slack webhook URL in that environment variable.`);
   const baseline = parseBaseline(await readFile(resolve(baselinePath), "utf8"));
   const items = await loadGoldenSet(resolve(set));
-  const watch = await runWatch({ items, baseline, maxCalls, concurrency, client: withRetry(createClient()), ...(runs ? { runs } : {}) });
-  if (format === "json") console.log(JSON.stringify(watch, null, 2));
-  else if (format === "markdown") console.log(formatWatchMarkdown(watch));
+  const runs = f["--runs"] as number | undefined;
+  const watch = await runWatch({ items, baseline, maxCalls: int(f, "--max-calls", 500), concurrency: int(f, "--concurrency", 2), client: withRetry(createClient()), ...(runs ? { runs } : {}) });
+  if (f["--json"]) console.log(JSON.stringify(watch, null, 2));
+  else if (f["--markdown"]) console.log(formatWatchMarkdown(watch));
   else console.log(formatWatchText(watch));
   if (watch.alert && webhook) {
     await postSlack(webhook, slackMessage(watch)).then(
@@ -382,6 +400,58 @@ async function watchCommand(args: string[]): Promise<number> {
     );
   }
   return watch.alert ? 1 : 0;
+}
+
+async function fallbackCommand(args: string[]): Promise<number> {
+  const f = parseFlags(args, { "--model": "value", "--candidates": "value", "--format": "value", "--out": "value" });
+  const set = str(f, "--set");
+  const model = str(f, "--model");
+  if (!set || !model || !str(f, "--candidates")) throw new UsageError("fallback needs --set, --model and --candidates.");
+  modelRefOrUsage(model, "--model");
+  const candidates = cleanCandidates(model, str(f, "--candidates")!.split(","));
+  if (candidates.length === 0) throw new UsageError("--candidates needs at least one model other than --model.");
+  for (const c of candidates) modelRefOrUsage(c, "--candidates");
+  const format = str(f, "--format") ?? "litellm";
+  if (format !== "litellm" && format !== "openrouter") throw new UsageError("--format must be litellm or openrouter");
+  const out = str(f, "--out");
+  if (out && (await stat(resolve(out)).catch(() => null))) throw new UsageError(`${out} already exists; choose a new file name.`);
+  const runs = int(f, "--runs", 3);
+  if (runs === 1) console.error("With --runs 1 answer drift is not judged, so backups are ranked only by broken prompts and speed.");
+  const items = await loadGoldenSet(resolve(set));
+  console.error(`${plannedFallbackCalls(items.length, runs, candidates.length)} calls on your API keys (${model} once, then each of ${candidates.length} candidate${candidates.length === 1 ? "" : "s"}).`);
+  const result = await testFallbacks({ items, primary: model, candidates, client: withRetry(createClient()), runs, maxCalls: int(f, "--max-calls", 500), concurrency: int(f, "--concurrency", 2) });
+
+  if (result.skippedPrompts.length) console.error(`${model} did not answer ${result.skippedPrompts.join(", ")}, so those prompts were not used to judge the backups.`);
+  for (const c of result.candidates) {
+    const t = c.report.totals;
+    const latency = c.report.avgLatencyMs.new ? ` · ${(c.report.avgLatencyMs.new / 1000).toFixed(1)} s per call` : "";
+    console.log(`${c.qualifies ? "PASSES   " : "LEFT OUT "} ${c.model}  ${t.same} same · ${t.changed} changed · ${t.broken} broken${latency}${c.reason ? `  (${c.reason})` : ""}`);
+  }
+  if (result.fallbacks.length === 0) {
+    console.log("\nNo candidate passed without breaking a prompt, so no fallback config was written.");
+    return 1;
+  }
+  let config: string;
+  if (format === "litellm") {
+    config = litellmConfig(model, result.fallbacks, `${items.length} prompts × ${runs} runs`);
+  } else {
+    let or: ReturnType<typeof openrouterConfig>;
+    try {
+      or = openrouterConfig(model, result.fallbacks);
+    } catch (error) {
+      throw new UsageError(error instanceof Error ? error.message : String(error));
+    }
+    config = JSON.stringify(or.body, null, 2) + "\n";
+    if (or.unchecked.length) console.error(`Check these ids on openrouter.ai/models (OpenRouter sometimes names models differently): ${or.unchecked.join(", ")}`);
+    if (or.skipped.length) console.error(`Left out (not on OpenRouter): ${or.skipped.join(", ")}`);
+  }
+  if (out) {
+    await writeFile(resolve(out), config, { flag: "wx" });
+    console.log(`\nWrote ${format} config with ${result.fallbacks.length} tested fallback${result.fallbacks.length === 1 ? "" : "s"} to ${out}.`);
+  } else {
+    console.log(`\n${config}`);
+  }
+  return 0;
 }
 
 class UsageError extends Error {}
@@ -431,6 +501,7 @@ async function main(argv: string[]): Promise<number> {
   if (command === "starter") return starterCommand(rest);
   if (command === "baseline") return baselineCommand(rest);
   if (command === "watch") return watchCommand(rest);
+  if (command === "fallback") return fallbackCommand(rest);
   if (command !== "scan") throw new UsageError(command ? `Unknown command: ${command}` : "Missing command.");
 
   const options = parseArgs(rest);

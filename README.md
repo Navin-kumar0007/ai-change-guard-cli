@@ -8,6 +8,7 @@ AI providers retire models on a schedule. When a model you call is retired, requ
 - **Import:** turns logs you already have (Langfuse, Helicone, OpenTelemetry, raw request logs) into a golden set, so you don't write tests by hand.
 - **Prompt Repair:** when the new model breaks your JSON format, finds a prompt change that fixes it and proves it with a re-test.
 - **Nightly watch:** asks the model you already use again every night and compares with a committed baseline, so a silent model update or a reroute to another model reaches you as one alert (job failure, email, Slack) instead of as broken answers in production.
+- **Tested fallbacks:** `fallback` replays your golden set on backup models and writes a LiteLLM or OpenRouter fallback config with only the ones that broke nothing, so an outage switches to a model you know works.
 - **Switch:** once the replay passes, changes the model ID across your code, or opens a pull request with the replay report as proof.
 - **AI security check:** flags AI-specific mistakes with zero AI calls: AI keys in code or the browser, model output passed to eval, a shell, SQL or raw HTML, user input inside the system prompt, agent tools that delete, pay or send without a confirmation step, and unpinned MCP servers (mapped to the OWASP Top 10 for LLM and agentic apps; advisory, never a guarantee).
 - **Token Saver:** points out common token waste (no output limit, no prompt caching, cache-breaking prompts, unbatched loops).
@@ -66,6 +67,15 @@ node packages/scanner/dist/cli.js replay --set prompts.jsonl --old openai:gpt-4o
 Every prompt gets a verdict: same, changed, broken, or could not compare, with the reason. A spend cap (`--max-calls`, default 500) stops a run before it starts if it would make too many calls. Providers: OpenAI, Anthropic, Google Gemini, Groq, OpenRouter, Mistral and Ollama.
 
 **Prompt Repair:** add `--repair`. When the new model breaks a prompt's JSON format (prose around the JSON, code fences, schema misses), AI Change Guard tries fixed, readable changes on the new model only: a JSON-only instruction in the system prompt (with your schema), then that plus the provider's JSON mode. Each try is re-tested with the same rules, and the first one that passes is shown as the exact change to make. `--repaired-set fixed.jsonl` writes your golden set with the working fixes applied, so you can re-run it. Repair calls come out of the same `--max-calls` budget; `--repaired-set` writes a new file with prompts only, without comments or extra fields.
+
+## Backup models for an outage
+
+```
+node packages/scanner/dist/cli.js fallback --set golden.jsonl --model openai:gpt-4o \
+  --candidates anthropic:claude-sonnet-5-5,google:gemini-3.1-flash-lite --format litellm --out litellm-config.yaml
+```
+
+Your model answers the golden set once; each candidate answers it too and is judged against those answers. Only candidates with nothing broken go into the config, fewest changed answers first. `--format litellm` writes a LiteLLM proxy `config.yaml` (`router_settings.fallbacks`, keys read from the environment); `--format openrouter` writes the `models` fallback list for OpenRouter requests and lists the ids to check on openrouter.ai/models. Cost: prompts × runs × (1 + candidates) calls.
 
 ## Switch the model in your code
 

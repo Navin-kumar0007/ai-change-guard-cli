@@ -21,3 +21,5 @@ export { ReplayCancelledError } from "./run.js";
 export { BASELINE_VERSION, createBaseline, formatWatchMarkdown, formatWatchText, itemHash, parseBaseline, postSlack, runWatch, slackMessage, WATCH_SHARE } from "./watch.js";
 export type { Baseline, BaselineOptions, WatchOptions, WatchReport } from "./watch.js";
 export type { JudgeOptions } from "./verdict.js";
+export { cleanCandidates, litellmConfig, openrouterConfig, plannedFallbackCalls, testFallbacks } from "./fallback.js";
+export type { CandidateResult, FallbackOptions, FallbackResult } from "./fallback.js";
