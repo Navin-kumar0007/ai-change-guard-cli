@@ -7,7 +7,7 @@ export { runReplay, plannedCalls, SpendCapError } from "./run.js";
 export type { RunRecord, ReplayOptions, Side } from "./run.js";
 export { judgeItem } from "./verdict.js";
 export type { ItemResult, Reason, ReasonCode, SideStats, Verdict } from "./verdict.js";
-export { buildReplayReport, formatReplayMarkdown, formatReplayText, isReroute } from "./report.js";
+export { buildReplayReport, costLine, costOfCall, formatReplayMarkdown, formatReplayText, isReroute } from "./report.js";
 export type { ReplayReport, Reroute } from "./report.js";
 export { applyRepair, formatInstruction, formatRepairMarkdown, formatRepairText, goldenLine, plannedRepairCalls, repairable, runRepair } from "./repair.js";
 export type { RepairAttempt, RepairKind, RepairPatch, RepairReport, RepairResult } from "./repair.js";

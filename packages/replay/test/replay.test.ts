@@ -182,6 +182,26 @@ describe("judgeItem", () => {
     expect(formatReplayText(report)).toContain("TIP: some calls hit the provider's rate limit");
   });
 
+  it("prices a call at list price on both models, when the catalog knows them", () => {
+    const goldenItems: GoldenItem[] = [{ id: "a", messages: [{ role: "user", content: "a" }] }];
+    const recs = records("a", [reply("hi", { inputTokens: 1000, outputTokens: 200 })], [reply("hi", { inputTokens: 1300, outputTokens: 260 })]);
+    const report = buildReplayReport(goldenItems, recs, {
+      oldModel: "anthropic:claude-sonnet-4-5",
+      newModel: "anthropic:claude-sonnet-5-5",
+      runs: 1,
+      today: "2026-11-23",
+    });
+    // Old: 1,000 × $3 + 200 × $15 per 1M = $0.006. New: 1,300 × $2 + 260 × $10 per 1M = $0.0052.
+    expect(report.costPerCall?.old).toBeCloseTo(0.006);
+    expect(report.costPerCall?.new).toBeCloseTo(0.0052);
+    expect(formatReplayText(report)).toContain("Cost per call at list price: $0.006 → $0.0052 (-13%)");
+    expect(formatReplayMarkdown(report)).toContain("Cost per call at list price: $0.006 → $0.0052 (-13%).");
+
+    const unknown = buildReplayReport(goldenItems, recs, { oldModel: "ollama:llama3", newModel: "google:made-up", runs: 1 });
+    expect(unknown.costPerCall).toBeUndefined();
+    expect(formatReplayText(unknown)).not.toContain("Cost per call");
+  });
+
   it("groups identical errors into one line in the text report", () => {
     const goldenItems: GoldenItem[] = ["a", "b", "c", "d", "e"].map((id) => ({ id, messages: [{ role: "user", content: id }] }));
     const recs = goldenItems.flatMap((g) => records(g.id, [new Error("HTTP 404: model retired")], [new Error("HTTP 404: model retired")]));

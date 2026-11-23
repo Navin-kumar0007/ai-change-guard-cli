@@ -651,6 +651,76 @@ function judgeItem(item, records, options = {}) {
   return result;
 }
 
+// packages/catalog/dist/index.js
+import { readFileSync } from "node:fs";
+function load(file) {
+  return JSON.parse(readFileSync(new URL(`../data/${file}`, import.meta.url), "utf8"));
+}
+var models = load("models.json").models;
+var apis = load("apis.json").apis;
+var priceData = load("prices.json");
+var prices = priceData.prices;
+var priceChanges = priceData.changes;
+var tokenizers = priceData.tokenizers;
+var defaultPlatform = {
+  openai: "openai-api",
+  anthropic: "anthropic-api",
+  google: "gemini-api",
+  mistral: "mistral-api"
+};
+function lookupModel(id) {
+  return models.filter((m) => m.id === id);
+}
+function lookupPrice(id, platform) {
+  return prices.find((p) => p.id === id && p.platform === platform);
+}
+function lookupPriceChanges(id, platform) {
+  return priceChanges.filter((c) => c.id === id && c.platform === platform).sort((a, b) => a.on.localeCompare(b.on));
+}
+function priceOn(id, platform, date) {
+  const base = lookupPrice(id, platform);
+  if (!base)
+    return void 0;
+  let price = { input: base.input, output: base.output };
+  for (const change2 of lookupPriceChanges(id, platform)) {
+    if (change2.on > date)
+      break;
+    if (change2.input === void 0 || change2.output === void 0)
+      return void 0;
+    price = { input: change2.input, output: change2.output };
+  }
+  return price;
+}
+function tokenRatio(from, to) {
+  const a = lookupPrice(from.id, from.platform)?.tokenizer;
+  const b = lookupPrice(to.id, to.platform)?.tokenizer;
+  if (!a || !b || a === b)
+    return 1;
+  const forward = tokenizers.find((t) => t.id === b && t.relativeTo === a);
+  if (forward)
+    return forward.ratio;
+  const back = tokenizers.find((t) => t.id === a && t.relativeTo === b);
+  return back ? 1 / back.ratio : 1;
+}
+function billedPriceOn(id, platform, date) {
+  const reroute = models.find((m) => m.id === id && m.platform === platform && m.reroutesTo && m.retiresOn <= date);
+  return reroute?.reroutesTo ? priceOn(reroute.reroutesTo, platform, date) : priceOn(id, platform, date);
+}
+function localToday() {
+  return (/* @__PURE__ */ new Date()).toLocaleDateString("en-CA");
+}
+function daysBetween(from, to) {
+  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 864e5);
+}
+function formatUsd(amount) {
+  const abs = Math.abs(amount);
+  const text = abs >= 0.1 || abs === 0 ? abs.toFixed(2) : abs.toFixed(6).replace(/(\.\d\d\d*?)0+$/, "$1");
+  return `${amount < 0 ? "-" : ""}$${text}`;
+}
+function callCost(price, inputTokens, outputTokens) {
+  return (inputTokens * price.input + outputTokens * price.output) / 1e6;
+}
+
 // packages/replay/dist/report.js
 var VERDICT_ORDER = { broken: 0, changed: 1, error: 2, same: 3 };
 var average2 = (values) => values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
@@ -664,6 +734,12 @@ function isReroute(requested, served) {
   const a = lastSegment(requested);
   const b = lastSegment(served);
   return !b.startsWith(a) && !a.startsWith(b);
+}
+function costOfCall(ref, usage, today) {
+  const provider = ref.slice(0, ref.indexOf(":"));
+  const platform = Object.hasOwn(defaultPlatform, provider) ? defaultPlatform[provider] : void 0;
+  const price = platform ? billedPriceOn(modelName(ref), platform, today) : void 0;
+  return price ? callCost(price, usage.input, usage.output) : void 0;
 }
 function buildReplayReport(items, records, options) {
   const results = items.map((item) => judgeItem(item, records, options.judge)).sort((a, b) => VERDICT_ORDER[a.verdict] - VERDICT_ORDER[b.verdict]);
@@ -684,6 +760,10 @@ function buildReplayReport(items, records, options) {
       if (isReroute(requested, s))
         reroutes.push({ side, requested, served: s });
   }
+  const today = options.today ?? localToday();
+  const avgTokens = { old: usage("old"), new: usage("new") };
+  const oldCost = paired.length ? costOfCall(options.oldModel, avgTokens.old, today) : void 0;
+  const newCost = paired.length ? costOfCall(options.newModel, avgTokens.new, today) : void 0;
   return {
     oldModel: options.oldModel,
     newModel: options.newModel,
@@ -691,8 +771,9 @@ function buildReplayReport(items, records, options) {
     calls: records.length,
     failedCalls: records.filter((r) => r.error).length,
     totals,
-    avgTokens: { old: usage("old"), new: usage("new") },
+    avgTokens,
     avgLatencyMs: { old: average2(paired.map((r) => r.old.avgLatencyMs)), new: average2(paired.map((r) => r.new.avgLatencyMs)) },
+    ...oldCost !== void 0 || newCost !== void 0 ? { costPerCall: { ...oldCost !== void 0 ? { old: oldCost } : {}, ...newCost !== void 0 ? { new: newCost } : {} } } : {},
     comparedPrompts: paired.length,
     rateLimited: records.some((r) => r.error?.startsWith("HTTP 429")),
     reroutes,
@@ -704,6 +785,14 @@ function change(before, after) {
     return "";
   const pct = Math.round((after - before) / before * 100);
   return ` (${pct > 0 ? "+" : ""}${pct}%)`;
+}
+function costLine(report) {
+  const c = report.costPerCall;
+  if (!c)
+    return "";
+  const side = (v) => v === void 0 ? "no list price known" : formatUsd(v);
+  const pct = c.old !== void 0 && c.new !== void 0 ? change(c.old, c.new) : "";
+  return `Cost per call at list price: ${side(c.old)} \u2192 ${side(c.new)}${pct}`;
 }
 function seconds(ms) {
   return `${(ms / 1e3).toFixed(1)} s`;
@@ -723,6 +812,9 @@ function formatReplayMarkdown(report) {
     "",
     `Per call: input tokens ${Math.round(o.input)} \u2192 ${Math.round(n.input)}${change(o.input, n.input)}, output tokens ${Math.round(o.output)} \u2192 ${Math.round(n.output)}${change(o.output, n.output)}, latency ${seconds(report.avgLatencyMs.old)} \u2192 ${seconds(report.avgLatencyMs.new)}.`
   ];
+  const cost = costLine(report);
+  if (cost)
+    out.push("", `${cost}.`);
   for (const r of report.reroutes)
     out.push("", `> **Note:** the ${r.side} model \`${r.requested}\` was answered by \`${r.served}\`.`);
   const flagged = report.items.filter((i) => i.verdict !== "same");
@@ -1207,23 +1299,6 @@ function scanText(file, content, kind, apiRules) {
 
 // packages/scanner/dist/scan.js
 import { readFile as readFile2, stat } from "node:fs/promises";
-
-// packages/catalog/dist/index.js
-import { readFileSync } from "node:fs";
-function load(file) {
-  return JSON.parse(readFileSync(new URL(`../data/${file}`, import.meta.url), "utf8"));
-}
-var models = load("models.json").models;
-var apis = load("apis.json").apis;
-var defaultPlatform = {
-  openai: "openai-api",
-  anthropic: "anthropic-api",
-  google: "gemini-api",
-  mistral: "mistral-api"
-};
-function lookupModel(id) {
-  return models.filter((m) => m.id === id);
-}
 
 // packages/scanner/dist/security.js
 import { basename as basename2 } from "node:path";
@@ -1876,6 +1951,100 @@ async function scanDirectory(root) {
   return result;
 }
 
+// packages/scanner/dist/costs.js
+var RECENT_DAYS = 30;
+function dayBefore(date) {
+  return new Date(Date.parse(`${date}T00:00:00Z`) - 864e5).toISOString().slice(0, 10);
+}
+function changeRow(m, change2, priced, today) {
+  const before = priceOn(priced, m.platform, dayBefore(change2.on));
+  if (!before)
+    return void 0;
+  const row = {
+    id: m.id,
+    platform: m.platform,
+    kind: change2.kind,
+    on: change2.on,
+    daysLeft: daysBetween(today, change2.on),
+    before,
+    verified: change2.verified,
+    locations: m.locations
+  };
+  if (priced !== m.id)
+    row.billedAs = priced;
+  if (change2.input !== void 0 && change2.output !== void 0)
+    row.after = { input: change2.input, output: change2.output };
+  if (change2.note)
+    row.note = change2.note;
+  return row;
+}
+function buildCostRows(models2, today) {
+  const rows = [];
+  const keep = (on) => daysBetween(today, on) >= -RECENT_DAYS;
+  const push = (row) => row && rows.push(row);
+  for (const m of models2) {
+    const ownUntil = m.reroute?.on;
+    for (const change2 of lookupPriceChanges(m.id, m.platform)) {
+      if (keep(change2.on) && (!ownUntil || change2.on < ownUntil))
+        push(changeRow(m, change2, m.id, today));
+    }
+    const target = m.reroute ? lookupPrice(m.reroute.to, m.platform) : void 0;
+    if (!m.reroute || !target)
+      continue;
+    const { on, to } = m.reroute;
+    const before = priceOn(m.id, m.platform, dayBefore(on));
+    const after = priceOn(to, m.platform, on);
+    if (keep(on) && before && after && (before.input !== after.input || before.output !== after.output)) {
+      rows.push({
+        id: m.id,
+        platform: m.platform,
+        kind: "reroute-billing",
+        on,
+        daysLeft: daysBetween(today, on),
+        before,
+        after,
+        billedAs: to,
+        verified: target.verified,
+        note: `Requests are answered by ${to} and billed at its rates.`,
+        locations: m.locations
+      });
+    }
+    for (const change2 of lookupPriceChanges(to, m.platform)) {
+      if (change2.on > on && keep(change2.on))
+        push(changeRow(m, change2, to, today));
+    }
+  }
+  return rows.sort((a, b) => a.on.localeCompare(b.on) || a.id.localeCompare(b.id));
+}
+function formatPrice(price) {
+  return `${formatUsd(price.input)} input, ${formatUsd(price.output)} output per 1M tokens`;
+}
+function formatPriceMove(before, after) {
+  return `${formatUsd(before.input)} \u2192 ${formatUsd(after.input)} input, ${formatUsd(before.output)} \u2192 ${formatUsd(after.output)} output per 1M tokens`;
+}
+function percent(from, to) {
+  return from === 0 ? 0 : Math.round((to - from) / from * 100);
+}
+function priceChangeText(before, after) {
+  const i = percent(before.input, after.input);
+  const o = percent(before.output, after.output);
+  const sign = (n) => n > 0 ? `+${n}%` : `${n}%`;
+  return i === o ? sign(i) : `input ${sign(i)}, output ${sign(o)}`;
+}
+function describeCost(row) {
+  const subject = row.billedAs && row.kind !== "reroute-billing" ? `${row.id} (served as ${row.billedAs})` : row.id;
+  const when = row.daysLeft > 0 ? `on ${row.on} (in ${row.daysLeft} day${row.daysLeft === 1 ? "" : "s"})` : `since ${row.on}`;
+  if (row.kind === "reroute-billing" && row.after) {
+    return `${subject} is billed as ${row.billedAs} ${when}: ${formatPriceMove(row.before, row.after)} (${priceChangeText(row.before, row.after)})`;
+  }
+  if (!row.after) {
+    const what = row.kind === "intro-ends" ? `introductory price ${row.daysLeft > 0 ? "ends" : "ended"}` : `price ${row.daysLeft > 0 ? "changes" : "changed"}`;
+    return `${subject}: ${what} ${when}; the new price is not published yet (${row.daysLeft > 0 ? "now" : "was"} ${formatPrice(row.before)})`;
+  }
+  const up = row.after.input >= row.before.input && row.after.output >= row.before.output;
+  return `${subject}: price ${up ? "rises" : "changes"} ${when}: ${formatPriceMove(row.before, row.after)} (${priceChangeText(row.before, row.after)})`;
+}
+
 // packages/scanner/dist/report.js
 var SEVERITY_ORDER = { high: 0, medium: 1, review: 2 };
 var STATUS_ORDER = {
@@ -1885,9 +2054,6 @@ var STATUS_ORDER = {
   rerouting: 3,
   "no-known-retirement": 4
 };
-function daysBetween(from, to) {
-  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 864e5);
-}
 function statusFor(entry, today) {
   if (!entry)
     return { status: "no-known-retirement" };
@@ -1895,6 +2061,14 @@ function statusFor(entry, today) {
   const past = daysLeft <= 0;
   const status = entry.reroutesTo ? past ? "rerouted" : "rerouting" : past ? "retired" : "retiring";
   return { status, daysLeft, date: entry.retiresOn };
+}
+function costRowsFor(models2, today) {
+  return buildCostRows(models2.map((m) => ({
+    id: m.id,
+    platform: m.platform,
+    locations: m.locations,
+    ...m.reroutesTo && m.date ? { reroute: { on: m.date, to: m.reroutesTo } } : {}
+  })), today);
 }
 function buildReport(result, target, today) {
   const rows = /* @__PURE__ */ new Map();
@@ -1934,6 +2108,16 @@ function buildReport(result, target, today) {
             row.replacement = primary.replacement;
           if (primary.note)
             row.note = primary.note;
+        }
+        const price = billedPriceOn(hit.id, platform, today);
+        if (price)
+          row.price = price;
+        const replacementPrice = row.replacement ? billedPriceOn(row.replacement, platform, today) : void 0;
+        if (row.replacement && replacementPrice) {
+          row.replacementPrice = replacementPrice;
+          const ratio = tokenRatio({ id: hit.id, platform }, { id: row.replacement, platform });
+          if (ratio !== 1)
+            row.replacementTokenRatio = ratio;
         }
         rows.set(key, row);
       }
@@ -1983,6 +2167,7 @@ function buildReport(result, target, today) {
     row.findings.push({ location: `${f.file}:${f.line}`, detail: f.detail });
   }
   const security = [...securityRows.values()].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || b.findings.length - a.findings.length);
+  const costs = costRowsFor(models2, today);
   return {
     target,
     today,
@@ -1993,7 +2178,8 @@ function buildReport(result, target, today) {
     dynamic,
     apis: apiRows,
     tokenTips,
-    security
+    security,
+    costs
   };
 }
 
@@ -2048,6 +2234,12 @@ function buildCheck(report, changedFiles) {
   }
   for (const a of [...deadApis, ...soonApis]) {
     lines.push(`- **${a.name}** ${a.daysLeft <= 0 ? "shut down" : "shuts down"} ${a.date}${a.replacement ? ` (replacement: ${a.replacement})` : ""}`);
+  }
+  const costs = (report.costs ?? []).filter((c) => c.daysLeft <= SOON_DAYS);
+  if (costs.length > 0) {
+    lines.push("", "**Price changes** (advisory):");
+    for (const c of costs)
+      lines.push(`- ${describeCost(c)}`);
   }
   if (report.security?.length) {
     lines.push("", "**AI security check** (advisory):");

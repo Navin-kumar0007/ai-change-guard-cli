@@ -45,6 +45,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@ai-change-guard/llm": "0.1.0"
+    "@ai-change-guard/llm": "0.1.0",
+    "@ai-change-guard/catalog": "0.1.0"
   }
 }

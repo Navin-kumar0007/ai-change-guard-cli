@@ -1,3 +1,4 @@
+import { billedPriceOn, callCost, defaultPlatform, formatUsd, localToday, type Provider } from "@ai-change-guard/catalog";
 import type { GoldenItem } from "./golden.js";
 import type { RunRecord, Side } from "./run.js";
 import { judgeItem, type ItemResult, type JudgeOptions, type Verdict } from "./verdict.js";
@@ -22,6 +23,8 @@ export interface ReplayReport {
   totals: Record<Verdict, number>;
   avgTokens: { old: Usage; new: Usage };
   avgLatencyMs: { old: number; new: number };
+  /** US dollars per call at list price, from the average tokens; missing for a model the catalog has no price for. */
+  costPerCall?: { old?: number; new?: number };
   comparedPrompts: number;
   rateLimited: boolean;
   reroutes: Reroute[];
@@ -47,10 +50,19 @@ export function isReroute(requested: string, served: string): boolean {
   return !b.startsWith(a) && !a.startsWith(b);
 }
 
+/** List-price cost of one call for a provider:model reference, or undefined when the catalog has no price. */
+export function costOfCall(ref: string, usage: Usage, today: string): number | undefined {
+  const provider = ref.slice(0, ref.indexOf(":"));
+  // Gateways (groq, openrouter, ollama) bill their own prices: the catalog only knows the providers' own APIs.
+  const platform = Object.hasOwn(defaultPlatform, provider) ? defaultPlatform[provider as Provider] : undefined;
+  const price = platform ? billedPriceOn(modelName(ref), platform, today) : undefined;
+  return price ? callCost(price, usage.input, usage.output) : undefined;
+}
+
 export function buildReplayReport(
   items: GoldenItem[],
   records: RunRecord[],
-  options: { oldModel: string; newModel: string; runs: number; judge?: JudgeOptions },
+  options: { oldModel: string; newModel: string; runs: number; judge?: JudgeOptions; today?: string },
 ): ReplayReport {
   const results = items.map((item) => judgeItem(item, records, options.judge)).sort((a, b) => VERDICT_ORDER[a.verdict] - VERDICT_ORDER[b.verdict]);
   const totals: Record<Verdict, number> = { same: 0, changed: 0, broken: 0, error: 0 };
@@ -71,6 +83,11 @@ export function buildReplayReport(
     for (const s of served) if (isReroute(requested, s)) reroutes.push({ side, requested, served: s });
   }
 
+  const today = options.today ?? localToday();
+  const avgTokens = { old: usage("old"), new: usage("new") };
+  const oldCost = paired.length ? costOfCall(options.oldModel, avgTokens.old, today) : undefined;
+  const newCost = paired.length ? costOfCall(options.newModel, avgTokens.new, today) : undefined;
+
   return {
     oldModel: options.oldModel,
     newModel: options.newModel,
@@ -78,8 +95,9 @@ export function buildReplayReport(
     calls: records.length,
     failedCalls: records.filter((r) => r.error).length,
     totals,
-    avgTokens: { old: usage("old"), new: usage("new") },
+    avgTokens,
     avgLatencyMs: { old: average(paired.map((r) => r.old.avgLatencyMs)), new: average(paired.map((r) => r.new.avgLatencyMs)) },
+    ...(oldCost !== undefined || newCost !== undefined ? { costPerCall: { ...(oldCost !== undefined ? { old: oldCost } : {}), ...(newCost !== undefined ? { new: newCost } : {}) } } : {}),
     comparedPrompts: paired.length,
     rateLimited: records.some((r) => r.error?.startsWith("HTTP 429")),
     reroutes,
@@ -91,6 +109,15 @@ function change(before: number, after: number): string {
   if (before === 0) return "";
   const pct = Math.round(((after - before) / before) * 100);
   return ` (${pct > 0 ? "+" : ""}${pct}%)`;
+}
+
+/** "Cost per call at list price: $0.0012 → $0.0015 (+25%)", or "" when neither side has a price. */
+export function costLine(report: ReplayReport): string {
+  const c = report.costPerCall;
+  if (!c) return "";
+  const side = (v: number | undefined) => (v === undefined ? "no list price known" : formatUsd(v));
+  const pct = c.old !== undefined && c.new !== undefined ? change(c.old, c.new) : "";
+  return `Cost per call at list price: ${side(c.old)} → ${side(c.new)}${pct}`;
 }
 
 function seconds(ms: number): string {
@@ -111,6 +138,8 @@ export function formatReplayText(report: ReplayReport): string {
       `output tokens ${Math.round(o.output)} → ${Math.round(n.output)}${change(o.output, n.output)} · ` +
       `latency ${seconds(report.avgLatencyMs.old)} → ${seconds(report.avgLatencyMs.new)}`,
   );
+  const cost = costLine(report);
+  if (cost) out.push(cost);
   if (report.rateLimited) {
     out.push("TIP: some calls hit the provider's rate limit. Re-run with --concurrency 1, or use a key with a higher quota.");
   }
@@ -153,6 +182,8 @@ export function formatReplayMarkdown(report: ReplayReport): string {
     "",
     `Per call: input tokens ${Math.round(o.input)} → ${Math.round(n.input)}${change(o.input, n.input)}, output tokens ${Math.round(o.output)} → ${Math.round(n.output)}${change(o.output, n.output)}, latency ${seconds(report.avgLatencyMs.old)} → ${seconds(report.avgLatencyMs.new)}.`,
   ];
+  const cost = costLine(report);
+  if (cost) out.push("", `${cost}.`);
   for (const r of report.reroutes) out.push("", `> **Note:** the ${r.side} model \`${r.requested}\` was answered by \`${r.served}\`.`);
   const flagged = report.items.filter((i) => i.verdict !== "same");
   if (flagged.length > 0) {

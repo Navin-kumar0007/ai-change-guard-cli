@@ -31,6 +31,8 @@ import {
   runReplayJob,
 } from "@ai-change-guard/replay";
 import { buildReport, formatText, localToday } from "./report.js";
+import { describeCost, formatUsd } from "./costs.js";
+import { estimateImpact, usageFromLog, type ImpactSummary, type ModelUsage } from "./impact.js";
 import { findPrompts } from "./prompts.js";
 import { scanDirectory } from "./scan.js";
 import { applySwitch, planSwitch } from "./switch.js";
@@ -48,6 +50,7 @@ const USAGE = `Usage:
   ai-change-guard baseline --set golden.jsonl --model provider:model --out golden.baseline.json [--runs N]
   ai-change-guard watch --set golden.jsonl --baseline golden.baseline.json [--runs N] [--slack-webhook-env NAME]
   ai-change-guard fallback --set golden.jsonl --model provider:model --candidates a,b,c [--format litellm|openrouter] [--out FILE]
+  ai-change-guard cost [folder] --log ai-calls.jsonl [--sample 0.2] | --calls N --input-tokens N --output-tokens N [--model ID]
 
 Scan options:
   --json                      Print the report as JSON
@@ -89,6 +92,16 @@ Fallback (tested backup models for an outage):
   --candidates LIST           provider:model,... to test against your --model on the golden set
   --format litellm|openrouter Config to write (default litellm); only candidates with nothing broken go in
   --runs N                    Runs per prompt (default 3)
+
+Cost options (what announced price changes do to your monthly bill):
+  --log FILE                  The recorder's ai-calls.jsonl: call volume and tokens per model, scaled to 30 days
+  --sample SHARE              The recorder's sample setting, if not 1 (e.g. 0.2 when it kept 1 call in 5)
+  --calls N                   Or give the volume yourself: calls per month ...
+  --input-tokens N            ... average input tokens per call ...
+  --output-tokens N           ... and average output tokens per call
+  --model ID                  Which model --calls is for (needed when the folder uses more than one)
+  --today YYYY-MM-DD          Count days from this date instead of today
+  --json                      Print the estimate as JSON
 
 Switch options:
   --write                     Change the files (without it, only shows what would change)
@@ -454,6 +467,96 @@ async function fallbackCommand(args: string[]): Promise<number> {
   return 0;
 }
 
+function money(amount: number): string {
+  return amount >= 100 ? `$${Math.round(amount).toLocaleString("en-US")}` : formatUsd(amount);
+}
+
+export function formatImpact(summary: ImpactSummary): string {
+  const out: string[] = [];
+  if (summary.days !== undefined) {
+    const days = summary.days < 10 ? summary.days.toFixed(1) : String(Math.round(summary.days));
+    out.push(`Monthly cost estimate from the log (${days} days scaled to 30${summary.sample !== 1 ? `, sample ${summary.sample}` : ""}), at list prices:`);
+    if (summary.days < 7) out.push("A log of less than a week gives a rough estimate; record for longer for a better one.");
+  } else {
+    out.push("Monthly cost estimate from the volume you gave, at list prices:");
+  }
+  out.push("");
+  for (const r of summary.rows) {
+    const calls = Math.round(r.callsPerMonth).toLocaleString("en-US");
+    const tokens = `${Math.round(r.avgInputTokens).toLocaleString("en-US")} input / ${Math.round(r.avgOutputTokens).toLocaleString("en-US")} output tokens per call`;
+    out.push(`  ${r.model} (${r.platform}): about ${calls} calls a month · ${tokens}${r.monthlyNow !== undefined ? ` · about ${money(r.monthlyNow)} a month now` : ""}`);
+    if (r.changes.length === 0) out.push("    No announced price change.");
+    for (const c of r.changes) {
+      out.push(`    ${describeCost(c.row)}`);
+      if (c.delta !== undefined && c.monthlyAfter !== undefined) {
+        const sign = c.delta >= 0 ? "+" : "-";
+        const delta = `${sign}${money(Math.abs(c.delta))} a month`;
+        out.push(c.inEffect ? `    => already applies: the "now" figure includes it (${delta} compared with before)` : `    => about ${money(c.monthlyAfter)} a month (${delta})`);
+      } else if (!c.row.after) {
+        out.push("    => impact unknown until the provider publishes the new price");
+      }
+    }
+  }
+  if (summary.rows.length === 0) out.push("  No calls to a model with a known list price.");
+  if (summary.unpriced.length) out.push("", `No list price in the catalog for: ${summary.unpriced.join(", ")}.`);
+  out.push("", "Estimates use list prices (no batch, cache or volume discounts) and today's tokens per call.");
+  return out.join("\n");
+}
+
+async function costCommand(args: string[]): Promise<number> {
+  // The folder, when given, comes first: cost ./my-app --log ai-calls.jsonl
+  const folder = args[0] && !args[0].startsWith("-") ? args[0] : undefined;
+  const f = parseFlags(folder ? args.slice(1) : args, {
+    "--log": "value",
+    "--sample": "value",
+    "--calls": "int",
+    "--input-tokens": "value",
+    "--output-tokens": "value",
+    "--model": "value",
+    "--today": "value",
+    "--json": "bool",
+  });
+  const today = str(f, "--today") ?? localToday();
+  if (!DATE_RE.test(today)) throw new UsageError("--today must look like 2026-11-17");
+  const log = str(f, "--log");
+  const calls = f["--calls"] as number | undefined;
+  if (!log && calls === undefined) throw new UsageError("cost needs --log ai-calls.jsonl, or --calls with --input-tokens and --output-tokens.");
+  if (log && calls !== undefined) throw new UsageError("Use either --log or --calls, not both.");
+  const sampleText = str(f, "--sample");
+  const sample = sampleText === undefined ? 1 : Number(sampleText);
+  if (!(sample > 0 && sample <= 1)) throw new UsageError("--sample must be a number above 0 and at most 1, e.g. 0.2");
+
+  const report = folder ? buildReport(await scanDirectory(resolve(folder)), folder, today) : undefined;
+  const platformFor = (model: string) => report?.models.find((m) => m.id === model)?.platform;
+
+  let usage: ModelUsage[];
+  let summary: ImpactSummary;
+  if (log) {
+    usage = usageFromLog(await readFile(resolve(log), "utf8"));
+    if (usage.length === 0) throw new UsageError(`${log} has no recorded AI calls (expected the recorder's ai-calls.jsonl).`);
+    summary = estimateImpact(usage, { today, sample, platformFor });
+  } else {
+    const input = Number(str(f, "--input-tokens"));
+    const output = Number(str(f, "--output-tokens"));
+    if (!(input >= 0) || !(output >= 0) || str(f, "--input-tokens") === undefined || str(f, "--output-tokens") === undefined) {
+      throw new UsageError("--calls needs --input-tokens and --output-tokens (average per call).");
+    }
+    let model = str(f, "--model");
+    if (!model) {
+      const ids = [...new Set(report?.models.map((m) => m.id) ?? [])];
+      if (ids.length !== 1) throw new UsageError(report ? `The folder uses ${ids.length} models; say which with --model.` : "Give --model, or a folder that uses one model.");
+      model = ids[0]!;
+    }
+    const platforms = report?.models.filter((m) => m.id === model).map((m) => m.platform) ?? [];
+    const one: ModelUsage = { model, calls: calls!, callsWithTokens: 1, inputTokens: input, outputTokens: output };
+    if (platforms[0]) one.platform = platforms[0];
+    usage = [one];
+    summary = estimateImpact(usage, { today, perMonth: true, platformFor });
+  }
+  console.log(f["--json"] ? JSON.stringify(summary, null, 2) : formatImpact(summary));
+  return 0;
+}
+
 class UsageError extends Error {}
 
 interface Options {
@@ -502,6 +605,7 @@ async function main(argv: string[]): Promise<number> {
   if (command === "baseline") return baselineCommand(rest);
   if (command === "watch") return watchCommand(rest);
   if (command === "fallback") return fallbackCommand(rest);
+  if (command === "cost") return costCommand(rest);
   if (command !== "scan") throw new UsageError(command ? `Unknown command: ${command}` : "Missing command.");
 
   const options = parseArgs(rest);

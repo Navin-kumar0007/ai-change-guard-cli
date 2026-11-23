@@ -11,6 +11,7 @@ AI providers retire models on a schedule. When a model you call is retired, requ
 - **Tested fallbacks:** `fallback` replays your golden set on backup models and writes a LiteLLM or OpenRouter fallback config with only the ones that broke nothing, so an outage switches to a model you know works.
 - **Switch:** once the replay passes, changes the model ID across your code, or opens a pull request with the replay report as proof.
 - **AI security check:** flags AI-specific mistakes with zero AI calls: AI keys in code or the browser, model output passed to eval, a shell, SQL or raw HTML, user input inside the system prompt, agent tools that delete, pay or send without a confirmation step, and unpinned MCP servers (mapped to the OWASP Top 10 for LLM and agentic apps; advisory, never a guarantee).
+- **Price changes:** the scan lists announced price changes for the models you use: introductory prices ending, scheduled increases, and reroutes billed at another model's rates. It also shows each suggested replacement's price, and warns when the replacement's tokenizer uses more tokens for the same text. `cost` turns that into dollars a month from your real call volume. A replay shows the cost per call on both models.
 - **Token Saver:** points out common token waste (no output limit, no prompt caching, cache-breaking prompts, unbatched loops).
 - **Inside your AI assistant:** an [MCP server](packages/mcp/README.md) lets Claude Code, Cursor and other MCP clients scan your repo, look up retirement dates, plan a switch and test it.
 - **Runs where you are:** a CLI on your machine and a GitHub Action in your CI. Your code and API keys never leave your machine or runner.
@@ -77,6 +78,23 @@ node packages/scanner/dist/cli.js fallback --set golden.jsonl --model openai:gpt
 
 Your model answers the golden set once; each candidate answers it too and is judged against those answers. Only candidates with nothing broken go into the config, fewest changed answers first. `--format litellm` writes a LiteLLM proxy `config.yaml` (`router_settings.fallbacks`, keys read from the environment); `--format openrouter` writes the `models` fallback list for OpenRouter requests and lists the ids to check on openrouter.ai/models. Cost: prompts × runs × (1 + candidates) calls.
 
+## What price changes cost you
+
+The scan lists announced price changes for the models in your code. To see the effect on your bill, give `cost` your real call volume: the [recorder](packages/recorder/README.md)'s `ai-calls.jsonl`, or the numbers yourself.
+
+```sh
+node packages/scanner/dist/cli.js cost ./my-app --log ai-calls.jsonl            # add --sample 0.2 if the recorder kept 1 call in 5
+node packages/scanner/dist/cli.js cost --model gemini-3.8-flash --calls 50000 --input-tokens 1500 --output-tokens 400
+```
+
+```
+gemini-3.8-flash (gemini-api): about 50,000 calls a month · 1,500 input / 400 output tokens per call · about $131 a month now
+  gemini-3.8-flash: price rises on 2027-01-01 (in 39 days): $0.75 → $1.50 input, $3.75 → $7.50 output per 1M tokens (+100%)
+  => about $263 a month (+$131 a month)
+```
+
+Estimates use list prices: no batch, cache or volume discounts. A log is scaled from the days it covers to 30. When a provider has announced that a price ends but not published the new one, `cost` says so; it does not guess.
+
 ## Switch the model in your code
 
 After a replay passes, change every exact use of the old model ID:
@@ -102,6 +120,8 @@ Results appear in the run's Summary tab. The Action can also run a replay with k
 ## The retirement catalog
 
 [`packages/catalog/data/models.json`](packages/catalog/data/models.json) lists retirement and reroute dates for OpenAI, Azure OpenAI, Anthropic, Google Gemini and Vertex AI, Amazon Bedrock and Mistral models, each with links to the official source. Entries marked `"verified": false` have not been confirmed on an official page, and the CLI marks them with `*`. Dates change: if you spot a missing or wrong one, open an issue or pull request with the official link.
+
+[`packages/catalog/data/prices.json`](packages/catalog/data/prices.json) holds list prices in US dollars per 1M tokens for OpenAI, Anthropic and the Gemini API, copied from each provider's pricing page. It also holds announced price changes, and tokenizer differences: Claude Opus 4.7 and later produce about 30% more tokens for the same text. Prices are per platform, so a Gemini API price says nothing about Vertex AI.
 
 ## Project layout
 

@@ -1,11 +1,17 @@
 import {
   apis,
   defaultPlatform,
+  billedPriceOn,
+  daysBetween,
+  localToday,
   lookupModel,
+  tokenRatio,
   type ModelEntry,
   type Platform,
   type Provider,
+  type TokenPrice,
 } from "@ai-change-guard/catalog";
+import { buildCostRows, describeCost, formatPrice, type CostRow } from "./costs.js";
 import type { ScanResult } from "./scan.js";
 import { SECURITY_RULES, type SecurityRule } from "./security.js";
 import { TOKEN_RULES, type TokenRule } from "./tokens.js";
@@ -45,6 +51,12 @@ export interface ModelRow {
   gateways: string[];
   otherPlatforms: { platform: Platform; date: string }[];
   locations: string[];
+  /** List price today, when the catalog has it. */
+  price?: TokenPrice;
+  /** The suggested replacement's list price, to compare before switching. */
+  replacementPrice?: TokenPrice;
+  /** About how many tokens the replacement uses for 1 token of this model's (tokenizer difference); 1 is left out. */
+  replacementTokenRatio?: number;
 }
 
 export interface ApiRow {
@@ -69,6 +81,8 @@ export interface Report {
   tokenTips: TokenTipRow[];
   /** AI Security Check (advisory). Missing in reports stored before it existed. */
   security?: SecurityRow[];
+  /** Cost Change Guard: announced price changes for the models found. Missing in older stored reports. */
+  costs?: CostRow[];
 }
 
 const SEVERITY_ORDER = { high: 0, medium: 1, review: 2 } as const;
@@ -81,13 +95,7 @@ const STATUS_ORDER: Record<RowStatus, number> = {
   "no-known-retirement": 4,
 };
 
-export function localToday(): string {
-  return new Date().toLocaleDateString("en-CA");
-}
-
-export function daysBetween(from: string, to: string): number {
-  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
-}
+export { daysBetween, localToday };
 
 function statusFor(entry: ModelEntry | undefined, today: string): Pick<ModelRow, "status" | "daysLeft" | "date"> {
   if (!entry) return { status: "no-known-retirement" };
@@ -95,6 +103,19 @@ function statusFor(entry: ModelEntry | undefined, today: string): Pick<ModelRow,
   const past = daysLeft <= 0;
   const status: RowStatus = entry.reroutesTo ? (past ? "rerouted" : "rerouting") : past ? "retired" : "retiring";
   return { status, daysLeft, date: entry.retiresOn };
+}
+
+/** Announced price changes for these report rows, from the current catalog (reroutes included). */
+export function costRowsFor(models: ModelRow[], today: string): CostRow[] {
+  return buildCostRows(
+    models.map((m) => ({
+      id: m.id,
+      platform: m.platform,
+      locations: m.locations,
+      ...(m.reroutesTo && m.date ? { reroute: { on: m.date, to: m.reroutesTo } } : {}),
+    })),
+    today,
+  );
 }
 
 export function buildReport(result: ScanResult, target: string, today: string): Report {
@@ -135,6 +156,15 @@ export function buildReport(result: ScanResult, target: string, today: string): 
           if (primary.reroutesTo) row.reroutesTo = primary.reroutesTo;
           if (primary.replacement) row.replacement = primary.replacement;
           if (primary.note) row.note = primary.note;
+        }
+        // What a call is billed at today: announced changes and reroutes included.
+        const price = billedPriceOn(hit.id, platform, today);
+        if (price) row.price = price;
+        const replacementPrice = row.replacement ? billedPriceOn(row.replacement, platform, today) : undefined;
+        if (row.replacement && replacementPrice) {
+          row.replacementPrice = replacementPrice;
+          const ratio = tokenRatio({ id: hit.id, platform }, { id: row.replacement, platform });
+          if (ratio !== 1) row.replacementTokenRatio = ratio;
         }
         rows.set(key, row);
       }
@@ -190,6 +220,8 @@ export function buildReport(result: ScanResult, target: string, today: string): 
   }
   const security = [...securityRows.values()].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || b.findings.length - a.findings.length);
 
+  const costs = costRowsFor(models, today);
+
   return {
     target,
     today,
@@ -201,7 +233,14 @@ export function buildReport(result: ScanResult, target: string, today: string): 
     apis: apiRows,
     tokenTips,
     security,
+    costs,
   };
+}
+
+/** "uses about 30% more tokens", for a tokenizer ratio. */
+export function tokenRatioText(ratio: number): string {
+  const pct = Math.round(Math.abs(ratio - 1) * 100);
+  return `uses about ${pct}% ${ratio > 1 ? "more" : "fewer"} tokens for the same text`;
 }
 
 function statusLabel(row: ModelRow): string {
@@ -259,7 +298,11 @@ export function formatText(report: Report): string {
     );
     for (const m of report.models) {
       const extras: string[] = [];
-      if (m.replacement) extras.push(`replacement: ${m.replacement}`);
+      if (m.replacement) {
+        const price = m.replacementPrice ? ` (${formatPrice(m.replacementPrice)}${m.price ? `; now ${formatPrice(m.price)}` : ""})` : "";
+        const tokens = m.replacementTokenRatio ? `; it ${tokenRatioText(m.replacementTokenRatio)}` : "";
+        extras.push(`replacement: ${m.replacement}${price}${tokens}`);
+      }
       if (m.note) extras.push(m.note);
       for (const other of m.otherPlatforms) extras.push(`on ${other.platform}: retires ${other.date}`);
       if (m.gateways.length > 0) extras.push(`called through: ${m.gateways.join(", ")}`);
@@ -274,6 +317,15 @@ export function formatText(report: Report): string {
       const when = a.daysLeft <= 0 ? `SHUT DOWN since ${a.date}` : `SHUTS DOWN in ${a.daysLeft} days (${a.date})`;
       out.push(`  ${when}${a.verified ? "" : "*"}  ${a.name}  ${whereLabel(a.locations)}`);
       if (a.replacement) out.push(`    replacement: ${a.replacement}`);
+    }
+    out.push("");
+  }
+
+  if (report.costs?.length) {
+    out.push("Price changes");
+    for (const c of report.costs) {
+      out.push(`  ${describeCost(c)}${c.verified ? "" : "*"}  ${whereLabel(c.locations)}`);
+      if (c.note) out.push(`    ${c.note}`);
     }
     out.push("");
   }

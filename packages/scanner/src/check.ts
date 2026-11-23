@@ -1,3 +1,4 @@
+import { describeCost } from "./costs.js";
 import type { ModelRow, Report } from "./report.js";
 
 export type Conclusion = "success" | "neutral" | "failure";
@@ -62,6 +63,11 @@ export function buildCheck(report: Report, changedFiles: string[] | null): Check
   }
   for (const a of [...deadApis, ...soonApis]) {
     lines.push(`- **${a.name}** ${a.daysLeft <= 0 ? "shut down" : "shuts down"} ${a.date}${a.replacement ? ` (replacement: ${a.replacement})` : ""}`);
+  }
+  const costs = (report.costs ?? []).filter((c) => c.daysLeft <= SOON_DAYS);
+  if (costs.length > 0) {
+    lines.push("", "**Price changes** (advisory):");
+    for (const c of costs) lines.push(`- ${describeCost(c)}`);
   }
   if (report.security?.length) {
     lines.push("", "**AI security check** (advisory):");
