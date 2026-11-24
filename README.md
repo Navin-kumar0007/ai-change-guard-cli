@@ -72,6 +72,18 @@ Every prompt gets a verdict: same, changed, broken, or could not compare, with t
 
 **Prompt Repair:** add `--repair`. When the new model breaks a prompt's JSON format (prose around the JSON, code fences, schema misses), AI Change Guard tries fixed, readable changes on the new model only: a JSON-only instruction in the system prompt (with your schema), then that plus the provider's JSON mode. Each try is re-tested with the same rules, and the first one that passes is shown as the exact change to make. `--repaired-set fixed.jsonl` writes your golden set with the working fixes applied, so you can re-run it. Repair calls come out of the same `--max-calls` budget; `--repaired-set` writes a new file with prompts only, without comments or extra fields.
 
+## Leaving OpenAI Evals (it shuts down on 30 November 2026)
+
+OpenAI made Evals read-only on 31 October 2026 and shuts it down on 30 November, with no export button. The API still returns your evals until then, so save them now:
+
+```sh
+OPENAI_API_KEY=sk-... node packages/scanner/dist/cli.js evals-export --out openai-evals --golden golden.jsonl
+```
+
+It saves every eval with its graders, every run with its settings, each run's recorded calls (the exact messages sent, the model and its answer) and the dataset files you uploaded, one folder per eval. It only reads; nothing in your OpenAI account changes. Use a key of the project that owns the evals.
+
+`--golden` also turns the recorded calls into a golden set: the system prompt, the user messages, the model's settings, and a JSON check where the answers were JSON. Replay it on a new model whenever one changes (see above), or keep the saved files and the dataset for Promptfoo, which OpenAI suggests.
+
 ## ai-stack.lock: your AI dependencies in one file
 
 ```sh

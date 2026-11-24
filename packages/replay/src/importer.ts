@@ -109,6 +109,11 @@ function parseFile(text: string): { values: Json[]; badLines: number } {
   return { values, badLines };
 }
 
+/** An OpenAI Evals output item: one recorded call, whose "results" are grader scores, not more records. */
+function isEvalItem(value: Obj): value is Obj & { sample: Obj & { input: Json[] } } {
+  return isObj(value.sample) && Array.isArray(value.sample.input);
+}
+
 const CONTAINERS = ["data", "observations", "spans", "requests", "items", "records", "results", "rows", "generations"];
 
 /** Flattens wrappers (arrays, OTLP resourceSpans, {data:[...]}, a trace with observations) into records. */
@@ -125,7 +130,7 @@ function records(value: Json, out: Obj[] = []): Obj[] {
     return out;
   }
   const container = CONTAINERS.find((k) => Array.isArray(value[k]) && (value[k] as Json[]).some(isObj));
-  if (container && !Array.isArray(value.messages) && !Array.isArray(value.contents)) {
+  if (container && !isEvalItem(value) && !Array.isArray(value.messages) && !Array.isArray(value.contents)) {
     records(value[container], out);
     return out;
   }
@@ -434,6 +439,28 @@ function extractRecord(record: Obj): { call: Extracted; answer: Answer | null; i
     return call ? { call, answer: otelAnswer(attrs), ...(id ? { id } : {}) } : null;
   }
 
+  // OpenAI Evals output items (saved with evals-export): the exact messages sent, the model and its answer. The
+  // run's sampling_params (response format, tools), which the items don't repeat, come in as `sampling_params`.
+  if (isEvalItem(record)) {
+    const s = record.sample;
+    if (isObj(s.error) && (s.error.code || s.error.message)) throw new Skip("the eval's call failed");
+    const sp = isObj(record.sampling_params) ? record.sampling_params : {};
+    const max = num(s.max_completion_tokens) ?? num(sp.max_completion_tokens) ?? num(sp.max_output_tokens);
+    const evalCall = fromBody({
+      messages: s.input,
+      model: s.model,
+      ...(max && max > 0 ? { max_completion_tokens: max } : {}),
+      temperature: s.temperature ?? sp.temperature,
+      ...(sp.response_format !== undefined ? { response_format: sp.response_format } : {}),
+      ...(sp.text !== undefined ? { text: sp.text } : {}),
+      ...(sp.tools !== undefined ? { tools: sp.tools } : {}),
+    });
+    if (!evalCall) return null;
+    const itemId = num(record.datasource_item_id);
+    const id = str(record.id) ?? (itemId !== undefined ? `item-${itemId}` : undefined);
+    return { call: evalCall, answer: answerFrom(s.output), ...(id ? { id } : {}) };
+  }
+
   let call: Extracted | null = null;
   for (const key of BODY_KEYS) {
     const v = parsed(record[key]);
@@ -479,9 +506,14 @@ function spread<T>(list: T[], limit: number): T[] {
 const UNSAFE_ID = /[^A-Za-z0-9._-]+/g;
 
 export function importPrompts(text: string, options: ImportOptions = {}): ImportResult {
+  const { values, badLines } = parseFile(text);
+  return importValues(values, options, badLines);
+}
+
+/** Like importPrompts, for records already parsed (several files at once, or records given extra fields). */
+export function importValues(values: Json[], options: ImportOptions = {}, badLines = 0): ImportResult {
   const limit = options.limit ?? 50;
   const wantModel = options.model;
-  const { values, badLines } = parseFile(text);
   const all = values.flatMap((v) => records(v));
   const skipped: Record<string, number> = {};
   const skip = (reason: string) => (skipped[reason] = (skipped[reason] ?? 0) + 1);

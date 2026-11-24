@@ -21,6 +21,9 @@ import {
   generateStarterSet,
   goldenLine,
   importPrompts,
+  importValues,
+  exportOpenAiEvals,
+  runSamplingParams,
   cleanCandidates,
   litellmConfig,
   openrouterConfig,
@@ -59,6 +62,7 @@ const USAGE = `Usage:
   ai-change-guard replay --set prompts.jsonl --old provider:model --new provider:model [options]
   ai-change-guard switch <folder> --from <model-id> --to <model-id> [--write]
   ai-change-guard import <log-file> --out golden.jsonl [--model <model-id>] [--limit N]
+  ai-change-guard evals-export [--out openai-evals] [--golden golden.jsonl] [--limit N]
   ai-change-guard starter <folder> --model provider:model --out golden.jsonl [--count N]
   ai-change-guard baseline --set golden.jsonl --model provider:model --out golden.baseline.json [--runs N]
   ai-change-guard watch --set golden.jsonl --baseline golden.baseline.json [--runs N] [--slack-webhook-env NAME]
@@ -91,6 +95,13 @@ Helicone, OpenTelemetry, or raw OpenAI / Anthropic / Gemini request logs):
   --out FILE                  Golden set to write (a new file)
   --model ID                  Keep only calls to this model
   --limit N                   Keep at most N prompts, spread over the log (default 50)
+
+Evals export (OpenAI Evals shuts down on 30 Nov 2026; read-only since 31 Oct, with no export button):
+  Saves every eval, its graders, its runs, each run's recorded calls (output items) and the dataset
+  files, using OPENAI_API_KEY (a key of the project that owns the evals). Read-only: changes nothing.
+  --out FOLDER                Where to save (default openai-evals; one subfolder per eval)
+  --golden FILE               Also turn the recorded calls into a golden set for replay (a new file)
+  --limit N                   With --golden, keep at most N prompts (default 50)
 
 Starter options (no logs yet: finds the system prompts in your code and has a model write
 realistic user messages for each; one call per prompt, on your own key):
@@ -285,6 +296,56 @@ function takeValue(args: string[], i: number, flag: string): string {
   return v;
 }
 
+async function evalsExportCommand(args: string[]): Promise<number> {
+  // No replay flags here (--runs, --max-calls ...): the export makes no model calls.
+  const f = parseFlags(args, { "--out": "value", "--golden": "value", "--limit": "int" }, false);
+  const out = str(f, "--out") ?? "openai-evals";
+  const golden = str(f, "--golden");
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new UsageError("evals-export reads OPENAI_API_KEY: set it to a key of the OpenAI project that owns the evals.");
+  if (golden && (await stat(resolve(golden)).catch(() => null))) throw new UsageError(`${golden} already exists; choose a new file name.`);
+
+  console.error(`Saving your OpenAI evals to ${out}/ (read-only; nothing in your OpenAI account changes) ...`);
+  const r = await exportOpenAiEvals({ apiKey, outDir: resolve(out), onProgress: (m) => console.error(m) });
+  console.log(`Saved ${r.evals} eval${r.evals === 1 ? "" : "s"}, ${r.runs} run${r.runs === 1 ? "" : "s"}, ${r.items} recorded call${r.items === 1 ? "" : "s"} and ${r.datasetFiles} dataset file${r.datasetFiles === 1 ? "" : "s"} to ${out}/.`);
+  for (const p of r.problems) console.error(`Not saved: ${p}`);
+  if (r.evals === 0) console.log("No evals in this project. Evals belong to a project: use a key from the project that has them.");
+  if (!golden) {
+    if (r.items > 0) console.log(`Next, make a golden set to keep testing model switches: ai-change-guard import ${out}/<eval>/<run>.items.jsonl --out golden.jsonl`);
+    return r.problems.length > 0 ? 1 : 0;
+  }
+  // Each recorded call gets its run's settings (response format, tools), which the items don't repeat.
+  const values: unknown[] = [];
+  let badLines = 0;
+  for (const { file, run } of r.itemFiles) {
+    const params = runSamplingParams(run);
+    for (const line of (await readFile(file, "utf8")).split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const value = JSON.parse(line) as Record<string, unknown>;
+        values.push(params ? { ...value, sampling_params: params } : value);
+      } catch {
+        badLines++;
+      }
+    }
+  }
+  const result = importValues(values, { limit: int(f, "--limit", 50) }, badLines);
+  if (result.items.length === 0) {
+    console.log("No prompts found in the recorded calls, so no golden set was written.");
+    return 1;
+  }
+  try {
+    await writeFile(resolve(golden), result.items.map(goldenLine).join("\n") + "\n", { flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new UsageError(`${golden} already exists; choose a new file name. The export itself is saved in ${out}/.`);
+    throw error;
+  }
+  const checks = result.items.filter((i) => i.expect).length;
+  console.log(`Wrote ${result.items.length} prompts to ${golden} (${checks} with checks taken from the recorded answers). Replay them on a new model with: ai-change-guard replay --set ${golden} --old openai:<model> --new openai:<new-model>`);
+  console.log("These are real prompts from your evals: read the file and remove anything private before you commit it.");
+  return r.problems.length > 0 ? 1 : 0;
+}
+
 async function importCommand(args: string[]): Promise<number> {
   let file: string | undefined;
   let out: string | undefined;
@@ -394,8 +455,8 @@ type Flags = Record<string, string | number | true | undefined>;
 /** Flags the baseline, watch and fallback commands share. */
 const COMMON_FLAGS: Record<string, FlagKind> = { "--set": "value", "--runs": "int", "--max-calls": "int", "--concurrency": "int" };
 
-function parseFlags(args: string[], extra: Record<string, FlagKind>): Flags {
-  const spec = { ...COMMON_FLAGS, ...extra };
+function parseFlags(args: string[], extra: Record<string, FlagKind>, common = true): Flags {
+  const spec = common ? { ...COMMON_FLAGS, ...extra } : extra;
   const out: Flags = {};
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
@@ -857,6 +918,7 @@ async function main(argv: string[]): Promise<number> {
   if (command === "replay") return replayCommand(rest);
   if (command === "switch") return switchCommand(rest);
   if (command === "import") return importCommand(rest);
+  if (command === "evals-export") return evalsExportCommand(rest);
   if (command === "starter") return starterCommand(rest);
   if (command === "baseline") return baselineCommand(rest);
   if (command === "watch") return watchCommand(rest);

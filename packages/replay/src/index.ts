@@ -11,7 +11,7 @@ export { buildReplayReport, costLine, costOfCall, formatReplayMarkdown, formatRe
 export type { ReplayReport, Reroute } from "./report.js";
 export { applyRepair, formatInstruction, formatRepairMarkdown, formatRepairText, goldenLine, plannedRepairCalls, repairable, runRepair } from "./repair.js";
 export type { RepairAttempt, RepairKind, RepairPatch, RepairReport, RepairResult } from "./repair.js";
-export { importPrompts, sameModel } from "./importer.js";
+export { importPrompts, importValues, sameModel } from "./importer.js";
 export type { ImportOptions, ImportResult } from "./importer.js";
 export { generateStarterSet, parseStarterAnswer, starterRequest } from "./starter.js";
 export type { StarterOptions, StarterResult, StarterSource } from "./starter.js";
@@ -27,3 +27,5 @@ export { candidateProblem, cheaperCandidates, findSavings, formatSavingsMarkdown
 export type { Candidate, SavingsCandidate, SavingsOptions, SavingsResult } from "./savings.js";
 export { formatSlimMarkdown, formatSlimText, MIN_SLIM_ITEMS, parseSlimAnswer, placeholders, plannedSlimCalls, rewriteProblem, SLIM_STYLES, slimPrompts, slimRequest, slimTargets } from "./slim.js";
 export type { SlimOptions, SlimPrompt, SlimResult, SlimStyle, SlimVariant } from "./slim.js";
+export { EvalsExportError, exportOpenAiEvals, runFileIds, runSamplingParams, safeId } from "./openai-evals.js";
+export type { EvalsExportOptions, EvalsExportResult } from "./openai-evals.js";
