@@ -201,16 +201,16 @@
       ],
       "retiresOn": "2025-11-30",
       "replacement": "google-genai (Google Gen AI SDK)",
-      "verified": false,
-      "note": "End of support: the archived GitHub repository says 30 Nov 2025, the PyPI page says 31 Aug 2025. Either way it no longer gets fixes.",
+      "verified": true,
+      "note": "Support ended permanently on 30 November 2025 (the archived repository and the PyPI page agree); the last release, 0.8.6, came out on 16 December 2025 with fixes only.",
       "sources": [
         {
           "url": "https://github.com/google-gemini/deprecated-generative-ai-python",
-          "checked": "2026-11-23"
+          "checked": "2026-11-25"
         },
         {
           "url": "https://pypi.org/project/google-generativeai/",
-          "checked": "2026-11-23"
+          "checked": "2026-11-25"
         }
       ]
     },

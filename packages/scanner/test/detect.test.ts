@@ -24,6 +24,14 @@ describe("classifyModelId", () => {
     ["openai/gpt-4.1-mini", "openai", "gpt-4.1-mini"],
     ["ft:gpt-4o-mini-2024-07-18:acme::abc123", "openai", "gpt-4o-mini-2024-07-18"],
     ["mistral-large-latest", "mistral", "mistral-large-latest"],
+    ["gpt-image-1.5", "openai", "gpt-image-1.5"],
+    ["gpt-realtime-mini", "openai", "gpt-realtime-mini"],
+    ["dall-e-3", "openai", "dall-e-3"],
+    ["chatgpt-image-latest", "openai", "chatgpt-image-latest"],
+    ["text-moderation-latest", "openai", "text-moderation-latest"],
+    ["models/text-embedding-004", "google", "text-embedding-004"],
+    ["imagen-4.0-generate-001", "google", "imagen-4.0-generate-001"],
+    ["veo-3.0-generate-001", "google", "veo-3.0-generate-001"],
   ])("recognises %s", (literal, provider, id) => {
     const hit = classifyModelId(literal);
     expect(hit?.provider).toBe(provider);
@@ -33,6 +41,11 @@ describe("classifyModelId", () => {
   it("marks Bedrock and Vertex platforms", () => {
     expect(classifyModelId("anthropic.claude-3-opus-20240229-v1:0")?.platformHint).toBe("aws-bedrock");
     expect(classifyModelId("vertex_ai/gemini-2.5-pro")?.platformHint).toBe("vertex-ai");
+  });
+
+  it("counts short names that could be something else only in AI code", () => {
+    for (const id of ["whisper-1", "tts-1", "tts-1-hd", "sora-2", "embedding-001"]) expect(classifyModelId(id)?.weak, id).toBe(true);
+    for (const notModel of ["gpt-images", "tts-1x", "dall-e-4", "veo-latest"]) expect(classifyModelId(notModel), notModel).toBeNull();
   });
 
   it("flags fine-tuned models", () => {
