@@ -1,0 +1,15 @@
+{
+  "name": "ai-change-guard",
+  "description": "AI Change Guard: know before your AI model changes.",
+  "owner": {
+    "name": "AI Change Guard",
+    "url": "https://ai-change-guard.vercel.app"
+  },
+  "plugins": [
+    {
+      "name": "ai-change-guard",
+      "source": "./plugins/ai-change-guard",
+      "description": "Find the AI models and APIs your code uses and see which retire, reroute or shut down, with dates, official sources and replacements."
+    }
+  ]
+}

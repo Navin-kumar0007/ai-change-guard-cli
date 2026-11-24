@@ -72,6 +72,22 @@ Every prompt gets a verdict: same, changed, broken, or could not compare, with t
 
 **Prompt Repair:** add `--repair`. When the new model breaks a prompt's JSON format (prose around the JSON, code fences, schema misses), AI Change Guard tries fixed, readable changes on the new model only: a JSON-only instruction in the system prompt (with your schema), then that plus the provider's JSON mode. Each try is re-tested with the same rules, and the first one that passes is shown as the exact change to make. `--repaired-set fixed.jsonl` writes your golden set with the working fixes applied, so you can re-run it. Repair calls come out of the same `--max-calls` budget; `--repaired-set` writes a new file with prompts only, without comments or extra fields.
 
+## Inside Claude Code and Cursor
+
+Ask your AI coding tool "are any models in this repo retiring, and what should I switch to?".
+
+**Claude Code:** install the plugin, then ask, or run `/ai-change-guard:check-ai-models`:
+
+```
+/plugin install ai-change-guard --marketplace Navin-kumar0007/ai-change-guard-cli
+```
+
+On Claude Code older than 2.1.275, add the marketplace first: `/plugin marketplace add Navin-kumar0007/ai-change-guard-cli`, then `/plugin install ai-change-guard@ai-change-guard`.
+
+**Cursor:** copy [`integrations/cursor/ai-change-guard.mdc`](integrations/cursor/ai-change-guard.mdc) into your project's `.cursor/rules/`.
+
+The skill finds every model ID and AI API in the code, looks each one up in the public catalog (`https://ai-change-guard.vercel.app/radar.json`; nothing about your code is sent), and reports the date, days left, the official source and the replacement. It does not call the replacement "safe" without a replay of your own prompts, and it shows how to run one.
+
 ## Leaving OpenAI Evals (it shuts down on 30 November 2026)
 
 OpenAI made Evals read-only on 31 October 2026 and shuts it down on 30 November, with no export button. The API still returns your evals until then, so save them now:
