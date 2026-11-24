@@ -221,7 +221,7 @@ export async function run({ env, today, log, client, github }: RunDeps): Promise
             replayed: `on \`${oldModel}\` with the current and the shorter system prompt`,
             beforeMerge: [
               "- The shorter prompt was written by an AI model and passed your golden set: read it once to check it still says what you mean.",
-              "- Prompts built at runtime, joined from several strings or written with escape sequences are not changed; they are listed above.",
+              "- Prompts built at runtime or joined from several strings are not changed; they are listed above.",
             ],
           },
         });

@@ -119,11 +119,12 @@ describe("rewritePromptLiteral (Verified Prompt Slimming writes the shorter prom
     expect("content" in r2 && r2.content).toContain("const systemPrompt = `Help ${user.name} with Acme \\`orders\\`.`;");
   });
 
-  it("leaves joined, escaped or raw strings to a person", () => {
+  it("rewrites escaped strings, and leaves joined or raw ones to a person", () => {
     const joined = 'from openai import OpenAI\nSYSTEM_PROMPT = "You are a helpful assistant for Acme. " + "Reply as JSON with keys a and b."\n';
     expect(rewrite("a.py", joined, "Short prompt for Acme, reply JSON.")).toEqual({ reason: expect.stringMatching(/joined/) });
-    const escaped = 'from openai import OpenAI\nSYSTEM_PROMPT = "You are a helpful assistant.\\nReply as JSON with keys a and b."\n';
-    expect(rewrite("a.py", escaped, "Reply JSON with keys a and b.")).toEqual({ reason: expect.stringMatching(/escape sequences/) });
+    const escaped = 'from openai import OpenAI\nSYSTEM_PROMPT = "You are a helpful assistant.\\nReply as JSON with keys \\"a\\" and \\"b\\"."\n';
+    const r = rewrite("a.py", escaped, 'Reply JSON with keys "a" and "b".');
+    expect("content" in r && r.content).toContain('SYSTEM_PROMPT = "Reply JSON with keys \\"a\\" and \\"b\\"."');
     const raw = 'from openai import OpenAI\nSYSTEM_PROMPT = r"You are a helpful assistant for Acme orders, reply as JSON."\n';
     expect(rewrite("a.py", raw, "Acme orders.\nReply JSON.")).toEqual({ reason: expect.stringMatching(/raw string/) });
   });

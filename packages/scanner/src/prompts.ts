@@ -201,21 +201,22 @@ const BY_HAND = "change it by hand";
 
 /**
  * The file with `prompt` (found in it by findPromptsInText) replaced by `text`, written in the same kind of
- * string literal with the same indent, or the reason it can't be done safely. Only plain literals are
- * rewritten: a prompt joined from pieces, or written with escape sequences, is left for a person.
+ * string literal with the same indent, or the reason it can't be done safely. Only a prompt written as one
+ * literal is rewritten: one joined from pieces or with code is left for a person.
  */
 export function rewritePromptLiteral(content: string, prompt: FoundPrompt, text: string): { content: string } | { reason: string } {
   const lit = prompt.literal;
   if (!lit) return { reason: `it is joined from several strings or with code; ${BY_HAND}` };
   const inner = content.slice(lit.start, lit.end - lit.quote.length);
-  if (inner.includes("\\")) return { reason: `it is written with escape sequences; ${BY_HAND}` };
-  if (dedent(inner) !== prompt.text) return { reason: `the code changed since it was read; run again` };
+  const isRaw = /r/i.test(lit.prefix) || (prompt.file.endsWith(".go") && lit.quote === "`");
+  const current = readLiteral(content, lit.start, lit.quote, isRaw);
+  if (!current || dedent(current.text) !== prompt.text) return { reason: `the code changed since it was read; run again` };
   // One kind of line break: a lone CR would end a one-line string, and Python reads CR in a file as a newline.
   const next = text.replace(/\r\n?/g, "\n").trim();
-  const isRaw = /r/i.test(lit.prefix) || (prompt.file.endsWith(".go") && lit.quote === "`");
   const multi = lit.quote.length === 3 || lit.quote === "`";
   const fString = /f/i.test(lit.prefix);
   if (fString && /[{}]/.test(next.replace(/\{\{[^{}]*\}\}|\{[A-Za-z_][\w.]*\}/g, ""))) return { reason: `an f-string, and the new text has braces that are not placeholders; ${BY_HAND}` };
+  // Escapes (\" \n \u0041 ...) are written fresh; the read-back below proves the new string says exactly the new text.
 
   let body: string;
   if (multi) {
