@@ -15,7 +15,7 @@ AI providers retire models on a schedule. When a model you call is retired, requ
 - **AI security check:** flags AI-specific mistakes with zero AI calls: AI keys in code or the browser, model output passed to eval, a shell, SQL or raw HTML, user input inside the system prompt, agent tools that delete, pay or send without a confirmation step, and unpinned MCP servers (mapped to the OWASP Top 10 for LLM and agentic apps; advisory, never a guarantee).
 - **AI package guard:** reads your lockfiles and manifests (npm, pnpm, yarn, pip, Poetry, uv, Pipenv) and flags AI SDK, agent and MCP releases that were published with malicious code, such as litellm 1.82.7, 1.82.8 and 1.107.0, mistralai 2.4.6, guardrails-ai 0.10.1 and @mastra/core 1.42.1, each with its OSV advisory. With `--online` it also asks OSV for newer advisories, and npm or PyPI whether AI-sounding packages exist and how old they are: an invented or days-old name is a sign of a fake package.
 - **Price changes:** the scan lists announced price changes for the models you use: introductory prices ending, scheduled increases, and reroutes billed at another model's rates. It also shows each suggested replacement's price, and warns when the replacement's tokenizer uses more tokens for the same text. `cost` turns that into dollars a month from your real call volume. A replay shows the cost per call on both models.
-- **Token Saver:** points out common token waste (no output limit, no prompt caching, cache-breaking prompts, unbatched loops).
+- **Token Saver:** points out common token waste (no output limit, no prompt caching, cache-breaking prompts, unbatched loops). **Verified Prompt Slimming** (`slim`) goes further: a model rewrites each system prompt shorter, your golden set is replayed with the old and the new prompt, and the shorter one is proposed only if every answer still passes, with the measured saving.
 - **Inside your AI assistant:** an [MCP server](packages/mcp/README.md) lets Claude Code, Cursor and other MCP clients scan your repo, look up retirement dates, plan a switch and test it.
 - **Runs where you are:** a CLI on your machine and a GitHub Action in your CI. Your code and API keys never leave your machine or runner.
 
@@ -100,6 +100,21 @@ SAVE  openai:gpt-5.5 → openai:gpt-5.4: 50% cheaper per call ($0.011 → $0.005
 ```
 
 Without `--candidates`, it tests the two nearest cheaper models on the same provider, so the same API key works. Previews, dated snapshot IDs and models retiring within 90 days are skipped. Prices are taken at the higher of today and two months from now, so an introductory price that is about to end can't win. A candidate passes only with nothing broken and at most 2% of prompts answered differently. The cost per call uses the tokens measured in the replay, so a tokenizer that uses more tokens is counted. `--log ai-calls.jsonl` takes the monthly volume from the recorder. Cost: prompts × runs × (1 + candidates) calls.
+
+## Verified Prompt Slimming: a shorter system prompt, proved on your prompts
+
+```sh
+node packages/scanner/dist/cli.js slim --set golden.jsonl --model openai:gpt-5.5 --calls-per-month 100000 --write .
+```
+
+```
+System prompt "You are the order assistant for Acme Store. Please always read the cust…" (1840 characters, 25 prompts)
+  SAVE  concise rewrite, 910 characters: 33% cheaper per call (612 → 380 input tokens per call, $0.0021 → $0.0014 per call, about $70 a month)
+        25 same · 0 changed · 0 broken on 25 prompts
+  SKIP  minimal: 2 prompts broken in at least one run (first: order-7, not valid JSON)
+```
+
+For each system prompt in the golden set (the most-used first, `--max-prompts 3`), a model rewrites it twice, about 30% shorter and as short as it can be, keeping every rule, the output format and every template placeholder (`--writer` picks that model; default `--model`). Both rewrites are replayed on your own model against the original. A rewrite passes only with nothing broken, at most 2% of prompts answered differently and a measured saving of at least 3% per call; the saving uses the tokens measured in the replay, so longer answers count against it. A system prompt needs at least 3 prompts in the golden set. `--write FOLDER` puts each passing prompt into the code where it is written as one plain string literal (Python, JavaScript, TypeScript, Go); prompts joined from pieces, built at runtime or written with escape sequences are listed to change by hand. Cost per system prompt: 2 writer calls + prompts × runs × 3 calls.
 
 ## Backup models for an outage
 

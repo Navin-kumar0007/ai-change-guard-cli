@@ -20,6 +20,11 @@ export interface ReplayOptions {
   concurrency?: number;
   maxCalls?: number;
   defaultMaxTokens?: number;
+  /**
+   * Prompts sent on the new side in place of `items`, matched by id: the same prompts with a different system
+   * prompt, for example (Verified Prompt Slimming). Default: `items` on both sides.
+   */
+  newItems?: GoldenItem[];
   /** Which models to call; a repair re-test calls only the new one. Default: both. */
   sides?: Side[];
   /** Stops starting new calls once aborted; the replay then rejects with a ReplayCancelledError. */
@@ -55,11 +60,13 @@ export async function runReplay(options: ReplayOptions): Promise<RunRecord[]> {
     );
   }
 
+  const newById = new Map((options.newItems ?? []).map((i) => [i.id, i]));
   const tasks: (() => Promise<RunRecord>)[] = [];
   for (const item of options.items) {
     for (let run = 0; run < runs; run++) {
       for (const side of sides) {
-        const request = requestFor(item, side === "old" ? options.oldModel : options.newModel, options.defaultMaxTokens ?? 1024);
+        const sent = side === "new" ? (newById.get(item.id) ?? item) : item;
+        const request = requestFor(sent, side === "old" ? options.oldModel : options.newModel, options.defaultMaxTokens ?? 1024);
         tasks.push(async () => {
           try {
             return { itemId: item.id, side, run, response: await options.client(request) };

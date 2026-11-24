@@ -1,5 +1,8 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { findPromptsInText } from "../src/prompts.js";
+import { findPromptsInText, planPromptEdit, rewritePromptLiteral } from "../src/prompts.js";
 
 describe("findPromptsInText", () => {
   it("finds a Python triple-quoted system prompt and notices JSON parsing", () => {
@@ -25,6 +28,7 @@ describe("findPromptsInText", () => {
         json: true,
         templated: false,
         partial: false,
+        literal: { start: expect.any(Number), end: expect.any(Number), quote: '"""', prefix: "" },
       },
     ]);
   });
@@ -93,5 +97,74 @@ describe("findPromptsInText", () => {
       ["CHAT_SYSTEM_PROMPT", false],
       ["CLASSIFIER_SYSTEM_PROMPT", true],
     ]);
+  });
+});
+
+describe("rewritePromptLiteral (Verified Prompt Slimming writes the shorter prompt back)", () => {
+  const one = (file: string, code: string) => findPromptsInText(file, code)[0]!;
+  const rewrite = (file: string, code: string, text: string) => rewritePromptLiteral(code, one(file, code), text);
+
+  it("keeps a Python triple-quoted prompt's layout and indent", () => {
+    const code = ["from openai import OpenAI", "", "def run():", '    SYSTEM_PROMPT = """', "        You are a support assistant for Acme. Always be polite.", "        Reply as JSON with keys topic and urgency.", '    """', "    return SYSTEM_PROMPT"].join("\n");
+    const r = rewrite("bot.py", code, "Support assistant for Acme.\nReply JSON: topic, urgency.");
+    expect(r).toEqual({ content: code.replace("        You are a support assistant for Acme. Always be polite.\n        Reply as JSON with keys topic and urgency.", "        Support assistant for Acme.\n        Reply JSON: topic, urgency.") });
+  });
+
+  it("escapes a quote in a one-line string, and keeps a template literal's placeholders", () => {
+    const py = 'from openai import OpenAI\nsystem_prompt = "You are a helpful assistant who answers questions about Acme orders."\n';
+    const r1 = rewrite("a.py", py, 'Answer "Acme" order questions.\nBe brief.');
+    expect("content" in r1 && r1.content).toContain('system_prompt = "Answer \\"Acme\\" order questions.\\nBe brief."');
+    const js = "import OpenAI from 'openai';\nconst systemPrompt = `You help ${user.name} with their Acme orders, kindly and in detail, always.`;\n";
+    const r2 = rewrite("a.ts", js, "Help ${user.name} with Acme `orders`.");
+    expect("content" in r2 && r2.content).toContain("const systemPrompt = `Help ${user.name} with Acme \\`orders\\`.`;");
+  });
+
+  it("leaves joined, escaped or raw strings to a person", () => {
+    const joined = 'from openai import OpenAI\nSYSTEM_PROMPT = "You are a helpful assistant for Acme. " + "Reply as JSON with keys a and b."\n';
+    expect(rewrite("a.py", joined, "Short prompt for Acme, reply JSON.")).toEqual({ reason: expect.stringMatching(/joined/) });
+    const escaped = 'from openai import OpenAI\nSYSTEM_PROMPT = "You are a helpful assistant.\\nReply as JSON with keys a and b."\n';
+    expect(rewrite("a.py", escaped, "Reply JSON with keys a and b.")).toEqual({ reason: expect.stringMatching(/escape sequences/) });
+    const raw = 'from openai import OpenAI\nSYSTEM_PROMPT = r"You are a helpful assistant for Acme orders, reply as JSON."\n';
+    expect(rewrite("a.py", raw, "Acme orders.\nReply JSON.")).toEqual({ reason: expect.stringMatching(/raw string/) });
+  });
+
+  it("writes CR and backslashes safely, and a short prompt too", () => {
+    const ts = 'import OpenAI from "openai";\nconst systemPrompt = "You are a helpful assistant for Acme orders, reply in JSON.";\n';
+    const r1 = rewrite("a.ts", ts, "Acme orders.\rReply JSON.");
+    expect("content" in r1 && r1.content).toContain('const systemPrompt = "Acme orders.\\nReply JSON.";');
+    const r2 = rewrite("a.ts", ts, "Acme orders. Reply JSON."); // under the finder's 30 characters
+    expect("content" in r2 && r2.content).toContain('const systemPrompt = "Acme orders. Reply JSON.";');
+    const py = 'from openai import OpenAI\nSYSTEM_PROMPT = """You are a helpful assistant for Acme orders.\nReply in JSON."""\n';
+    const r3 = rewrite("a.py", py, "Acme orders: use \\n between items.");
+    expect("content" in r3 && r3.content).toContain('SYSTEM_PROMPT = """Acme orders: use \\\\n between items."""');
+  });
+
+  it("finds an indented prompt recorded from traffic, with its indent", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "acg-slim-"));
+    try {
+      const code = ["from openai import OpenAI", "def run():", '    SYSTEM_PROMPT = """', "        You are a support assistant for Acme.", "        Reply as JSON with keys topic and urgency.", '    """'].join("\n");
+      await writeFile(join(dir, "bot.py"), code);
+      const recorded = "\n        You are a support assistant for Acme.\n        Reply as JSON with keys topic and urgency.\n    ";
+      const plan = await planPromptEdit(dir, recorded, "Acme support. Reply JSON: topic, urgency.");
+      expect(plan.edits).toEqual([{ file: "bot.py", line: 3 }]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("plans the edit across a folder and reports places it can't change", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "acg-slim-"));
+    try {
+      const prompt = "You are a helpful assistant for Acme. Reply as JSON with keys a and b.";
+      await writeFile(join(dir, "bot.py"), `from openai import OpenAI\nSYSTEM_PROMPT = "${prompt}"\n`);
+      await writeFile(join(dir, "other.py"), `from openai import OpenAI\nSYSTEM_PROMPT = "You are a helpful assistant for Acme. " + "Reply as JSON with keys a and b."\n`);
+      const plan = await planPromptEdit(dir, prompt, "Acme assistant. Reply JSON with keys a and b.");
+      expect(plan.edits).toEqual([{ file: "bot.py", line: 2 }]);
+      expect(plan.skipped).toEqual([{ file: "other.py", line: 2, reason: expect.stringMatching(/joined/) }]);
+      expect(plan.files.get("bot.py")).toContain('SYSTEM_PROMPT = "Acme assistant. Reply JSON with keys a and b."');
+      expect(await readFile(join(dir, "bot.py"), "utf8")).toContain(prompt); // planning never writes
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

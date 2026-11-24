@@ -50,6 +50,18 @@ export interface EvidencePrInput {
   replay: ReplayReport;
   /** Markdown shown under the heading, e.g. the Money-Finder savings card. */
   extra?: string;
+  /** Wording for a pull request that is not a model switch (a shorter prompt). Default: a model switch. */
+  text?: PrText;
+}
+
+export interface PrText {
+  /** Commit subject; also how the branch is recognised as ours. */
+  subject: string;
+  branch: string;
+  heading: string;
+  /** What was replayed, after "replayed N of your real prompts M times each ". */
+  replayed: string;
+  beforeMerge: string[];
 }
 
 interface PullRequest {
@@ -79,16 +91,16 @@ function listed<T>(items: T[], render: (item: T) => string, more: string): strin
   return [...items.slice(0, MAX_LISTED).map(render), ...(items.length > MAX_LISTED ? [`- …and ${items.length - MAX_LISTED} more ${more}`] : [])];
 }
 
-export function evidenceBody(plan: SwitchPlan, replay: ReplayReport, scanPath: string, note?: string, extra?: string): string {
+export function evidenceBody(plan: SwitchPlan, replay: ReplayReport, scanPath: string, note?: string, extra?: string, text?: PrText): string {
   const where = (file: string, line: number) => `\`${posix.join(scanPath || ".", file)}:${line}\``;
   const t = replay.totals;
   const prompts = replay.items.length;
   const lines = [
     ...(note ? [`> ${note}`, ""] : []),
-    `## Switch \`${plan.from}\` to \`${plan.to}\``,
+    text ? `## ${text.heading}` : `## Switch \`${plan.from}\` to \`${plan.to}\``,
     "",
     ...(extra ? [extra, ""] : []),
-    `Before opening this pull request, AI Change Guard replayed **${prompts} of your real prompt${prompts === 1 ? "" : "s"}** ${replay.runs} time${replay.runs === 1 ? "" : "s"} each on \`${replay.oldModel}\` and \`${replay.newModel}\`.`,
+    `Before opening this pull request, AI Change Guard replayed **${prompts} of your real prompt${prompts === 1 ? "" : "s"}** ${replay.runs} time${replay.runs === 1 ? "" : "s"} each ${text ? text.replayed : `on \`${replay.oldModel}\` and \`${replay.newModel}\``}.`,
     "",
     "| Same | Changed | Broken | Errors |",
     "| ---: | ---: | ---: | ---: |",
@@ -96,7 +108,9 @@ export function evidenceBody(plan: SwitchPlan, replay: ReplayReport, scanPath: s
     "",
     t.changed > 0
       ? `**${t.changed} prompt${t.changed === 1 ? "" : "s"} answered differently but passed your checks.** Read them in the full report below before merging.`
-      : "Every prompt passed your checks with the same kind of answer on both models.",
+      : text
+        ? "Every prompt passed your checks with the same kind of answer as before."
+        : "Every prompt passed your checks with the same kind of answer on both models.",
     "",
     `### Code changes (${plan.edits.length})`,
     "",
@@ -110,8 +124,10 @@ export function evidenceBody(plan: SwitchPlan, replay: ReplayReport, scanPath: s
     "",
     "### Before you merge",
     "",
-    `- Settings are not checked yet: make sure every option you pass (temperature, max_tokens, tools, …) is supported by \`${plan.to}\`.`,
-    "- Model IDs built at runtime (from variables or environment) are not changed; search for them by hand.",
+    ...(text?.beforeMerge ?? [
+      `- Settings are not checked yet: make sure every option you pass (temperature, max_tokens, tools, …) is supported by \`${plan.to}\`.`,
+      "- Model IDs built at runtime (from variables or environment) are not changed; search for them by hand.",
+    ]),
     "- A pull request opened with the default workflow token does not start other workflows. Close and reopen it, or give the Action a `github-token` from a GitHub App or a personal token, to run your CI on it.",
     "",
   );
@@ -190,12 +206,12 @@ export async function openEvidencePr(input: EvidencePrInput): Promise<EvidencePr
   const { plan, modes } = await trackedOnly(input);
   if (plan.files.size === 0) return { action: "skipped", reason: "None of the files to change are committed and unchanged in the repository." };
 
-  const branch = branchName(plan.from, plan.to);
+  const branch = input.text?.branch ?? branchName(plan.from, plan.to);
   const owner = repo.split("/")[0];
   const t = replay.totals;
-  const subject = `Switch ${plan.from} to ${plan.to}`;
+  const subject = input.text?.subject ?? `Switch ${plan.from} to ${plan.to}`;
   const message = `${subject}\n\nReplayed ${replay.items.length} prompt${replay.items.length === 1 ? "" : "s"} x ${replay.runs} run${replay.runs === 1 ? "" : "s"} with AI Change Guard: ${t.same} same, ${t.changed} changed, ${t.broken} broken.`;
-  const body = evidenceBody(plan, replay, input.scanPath, undefined, input.extra);
+  const body = evidenceBody(plan, replay, input.scanPath, undefined, input.extra, input.text);
 
   const listPulls = () =>
     api<PullRequest[]>("GET", `/repos/${repo}/pulls?state=all&per_page=20&head=${encodeURIComponent(`${owner}:${branch}`)}`);
@@ -220,13 +236,21 @@ export async function openEvidencePr(input: EvidencePrInput): Promise<EvidencePr
     return (await api<{ sha: string }>("POST", `/repos/${repo}/git/commits`, { message, tree: newTree.sha, parents: [input.sha] })).sha;
   };
 
+  /** The branch already holds these exact files (a rewrite written by a model can differ from run to run). */
+  const branchHasFiles = async (): Promise<boolean> => {
+    const tree = await api<{ tree: { path: string; sha: string }[] }>("GET", `/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
+    const shas = new Map(tree.tree.map((e) => [e.path, e.sha]));
+    return [...plan.files].every(([file, content]) => shas.get(posix.join(input.scanPath || ".", file)) === gitBlobSha(Buffer.from(content)));
+  };
+
   const refresh = async (pr: PullRequest): Promise<EvidencePrResult> => {
     const { owned, behind } = await ownsBranch();
-    if (owned && behind > 0) {
+    // The description always shows this run's proof, so the code on the branch must be this run's code too.
+    if (owned && (behind > 0 || (input.text && !(await branchHasFiles())))) {
       await api("PATCH", `/repos/${repo}/git/refs/heads/${branch}`, { sha: await commit(), force: true });
     }
     const note = owned ? undefined : `People have added commits to this branch, so AI Change Guard no longer changes its code. The lists below describe ${base} today.`;
-    await api("PATCH", `/repos/${repo}/pulls/${pr.number}`, { body: owned ? body : evidenceBody(plan, replay, input.scanPath, note, input.extra) });
+    await api("PATCH", `/repos/${repo}/pulls/${pr.number}`, { body: owned ? body : evidenceBody(plan, replay, input.scanPath, note, input.extra, input.text) });
     return { action: "updated", number: pr.number, url: pr.html_url };
   };
 

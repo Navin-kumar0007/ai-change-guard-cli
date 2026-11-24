@@ -35,6 +35,8 @@ interface FakeOptions {
   compare?: { ahead_by: number; behind_by: number; commits: { commit: { message: string } }[] };
   /** Files committed at SHA (path → content); defaults to FILES. */
   committed?: Record<string, string>;
+  /** Files on the PR branch (path → content), for a refresh. */
+  branchFiles?: Record<string, string>;
 }
 
 /** A fake GitHub that answers like the REST API and records every call. */
@@ -55,7 +57,10 @@ function fakeGitHub(opts: FakeOptions = {}) {
       if (opts.racePulls && pullsListed > 1) return reply([{ number: 9, state: "open", html_url: "https://github.com/acme/bot/pull/9" }]);
       return reply(opts.pulls ?? []);
     }
-    if (method === "GET" && path === `/repos/acme/bot/compare/main...${encodeURIComponent(BRANCH)}`) {
+    if (method === "GET" && path.startsWith("/repos/acme/bot/git/trees/ai-change-guard")) {
+      return reply({ truncated: false, tree: Object.entries(opts.branchFiles ?? {}).map(([p, c]) => ({ path: p, mode: "100644", type: "blob", sha: gitBlobSha(Buffer.from(c)) })) });
+    }
+    if (method === "GET" && path.startsWith("/repos/acme/bot/compare/main...ai-change-guard")) {
       return reply(opts.compare ?? { ahead_by: 1, behind_by: 0, commits: [OUR_COMMIT] });
     }
     if (method === "GET" && path === `/repos/acme/bot/git/commits/${SHA}`) return reply({ tree: { sha: "base-tree" } });
@@ -235,6 +240,64 @@ describe("evidence pull request", () => {
     expect(body).toContain("**Switch to `openai:gpt-6-luna`: 95% cheaper per call");
     expect(body).toContain("a month");
     expect(body).not.toContain("## Money-Finder");
+  });
+
+  it("prompt slimming opens one PR that puts the shorter prompt into the code, with the card", async () => {
+    const system = "You are the order assistant for Acme Store. Please read the message very carefully. Reply with JSON only, keys item and qty, and never add extra text.";
+    const short = "Reply JSON only: keys item, qty. No extra text.";
+    const files = {
+      "src/bot.py": `from openai import OpenAI\nSYSTEM_PROMPT = "${system}"\nclient.chat.completions.create(model="gpt-4o", messages=m)\n`,
+      "golden.jsonl": [1, 2, 3].map((n) => JSON.stringify({ id: `o${n}`, system, input: `I want ${n} apples`, expect: { json: true } })).join("\n"),
+    };
+    const client: LlmClient = async (req) => ({
+      text: req.system?.startsWith("You shorten") ? JSON.stringify({ prompt: short }) : `{"item": "apple", "qty": ${/\d+/.exec(req.messages[0]!.content)![0]}}`,
+      toolCalls: [],
+      inputTokens: 20 + Math.round((req.system ?? "").length / 4),
+      outputTokens: 10,
+      latencyMs: 1,
+      refused: false,
+    });
+    const { api, calls } = fakeGitHub({ committed: files });
+    const { code, lines } = await runWithPr(api, { client, files, inputs: { "slim-prompts": "true", "new-model": "", "fail-on": "none" } });
+    expect(code).toBe(0);
+    expect(lines).toContain("AI Change Guard created pull request #7: https://github.com/acme/bot/pull/7");
+    expect(calls.find((c) => c.path.endsWith("/git/trees"))!.body.tree).toEqual([{ path: "src/bot.py", mode: "100644", type: "blob", content: files["src/bot.py"].replace(system, short) }]);
+    expect(calls.find((c) => c.path.endsWith("/git/refs"))!.body.ref).toMatch(/^refs\/heads\/ai-change-guard\/slim-prompt-[0-9a-f]{10}$/);
+    const pr = calls.find((c) => c.method === "POST" && c.path === "/repos/acme/bot/pulls")!.body;
+    expect(pr.title).toBe('Shorten the system prompt "You are the order assistant for Acme…" (tested on 3 real prompts)');
+    expect(pr.body).toContain("## A shorter system prompt, tested on your real prompts");
+    expect(pr.body).toContain("with the current and the shorter system prompt");
+    expect(pr.body).toContain("**Use the concise rewrite");
+    expect(pr.body).not.toContain("Model IDs built at runtime");
+  });
+
+  it("prompt slimming re-commits an open PR when this run's shorter prompt differs from the branch", async () => {
+    const system = "You are the order assistant for Acme Store. Please read the message very carefully. Reply with JSON only, keys item and qty, and never add extra text.";
+    const files = {
+      "src/bot.py": `from openai import OpenAI\nSYSTEM_PROMPT = "${system}"\n`,
+      "golden.jsonl": [1, 2, 3].map((n) => JSON.stringify({ id: `o${n}`, system, input: `I want ${n} apples`, expect: { json: true } })).join("\n"),
+    };
+    const writeWith = (short: string): LlmClient => async (req) => ({
+      text: req.system?.startsWith("You shorten") ? JSON.stringify({ prompt: short }) : `{"item": "apple", "qty": ${/\d+/.exec(req.messages[0]!.content)![0]}}`,
+      toolCalls: [],
+      inputTokens: 20 + Math.round((req.system ?? "").length / 4),
+      outputTokens: 10,
+      latencyMs: 1,
+      refused: false,
+    });
+    const open = [{ number: 7, state: "open", html_url: "https://github.com/acme/bot/pull/7" }];
+    const compare = { ahead_by: 1, behind_by: 0, commits: [{ commit: { message: 'Shorten the system prompt "You are the order assistant for Acme…"\n\nReplayed' } }] };
+    const inputs = { "slim-prompts": "true", "new-model": "", "fail-on": "none" };
+    const onBranch = (short: string) => ({ "src/bot.py": files["src/bot.py"].replace(system, short) });
+
+    const same = fakeGitHub({ committed: files, pulls: open, compare, branchFiles: onBranch("Reply JSON only: keys item, qty. No extra text.") });
+    await runWithPr(same.api, { client: writeWith("Reply JSON only: keys item, qty. No extra text."), files, inputs });
+    expect(writes(same.calls)).toEqual(["PATCH /repos/acme/bot/pulls/7"]);
+
+    const changed = fakeGitHub({ committed: files, pulls: open, compare, branchFiles: onBranch("Reply JSON only: keys item, qty. No extra text.") });
+    await runWithPr(changed.api, { client: writeWith("JSON only, keys item and qty; no extra text."), files, inputs });
+    expect(writes(changed.calls).some((w) => w.startsWith("PATCH /repos/acme/bot/git/refs/heads/ai-change-guard/slim-prompt-"))).toBe(true);
+    expect(changed.calls.find((c) => c.path.endsWith("/git/trees") && c.method === "POST")!.body.tree[0].content).toContain("JSON only, keys item and qty; no extra text.");
   });
 
   it("Money-Finder opens nothing when no cheaper model passes", async () => {

@@ -7,6 +7,8 @@ import {
   cleanCandidates,
   findSavings,
   formatSavingsMarkdown,
+  formatSlimMarkdown,
+  slimPrompts,
   formatRepairMarkdown,
   formatReplayMarkdown,
   formatWatchMarkdown,
@@ -17,7 +19,8 @@ import {
   runWatch,
   slackMessage,
 } from "@ai-change-guard/replay";
-import { addOnlinePackageChecks, buildCheck, buildReport, checkSwitchIds, compareMcp, describeServer, listMcpTools, planSwitch, scanDirectory, type Report } from "@ai-change-guard/scanner";
+import { addOnlinePackageChecks, buildCheck, buildReport, checkSwitchIds, compareMcp, describeServer, listMcpTools, planPromptEdit, planSwitch, scanDirectory, type Report } from "@ai-change-guard/scanner";
+import { createHash } from "node:crypto";
 import { githubApi, openEvidencePr, type GitHubApi } from "./pr.js";
 
 const SOON_DAYS = 90;
@@ -155,6 +158,81 @@ export async function run({ env, today, log, client, github }: RunDeps): Promise
     const t = watch.report.totals;
     log(`${watch.alert ? "::error::" : ""}AI Change Guard watch: ${t.same} same, ${t.changed} changed, ${t.broken} broken${watch.reroutes.length ? `, rerouted to ${watch.reroutes.map((r) => r.served).join(", ")}` : ""}`);
     return failed || watch.alert ? 1 : 0;
+  }
+
+  if (oneOf(input("slim-prompts", env) || "false", "slim-prompts", ["true", "false"]) === "true") {
+    // Verified Prompt Slimming: shorter system prompts, proved on the golden set with old-model.
+    if (!prompts || !oldModel) throw new Error('slim-prompts needs "prompts" and "old-model" (the model you use now).');
+    if (newModel) throw new Error('slim-prompts keeps your model: remove "new-model", or run the replay in a separate step.');
+    if (input("find-savings", env) === "true") throw new Error("slim-prompts and find-savings each need their own step: run them as two steps.");
+    const writer = input("writer-model", env) || oldModel;
+    const token = input("github-token", env) || env.GITHUB_TOKEN || "";
+    if (openPr && !github && !token) throw new Error('open-pr needs a token: keep the default "github-token" input or pass one.');
+    const callsInput = input("calls-per-month", env);
+    const result = await slimPrompts({
+      items: await loadGoldenSet(resolve(workspace, prompts)),
+      model: oldModel,
+      writer,
+      client: client ?? withRetry(createClient({ env })),
+      runs: positive(input("runs", env) || "3", "runs"),
+      concurrency: positive(input("concurrency", env) || "2", "concurrency"),
+      maxCalls: positive(input("max-calls", env) || "300", "max-calls"),
+      today,
+      ...(callsInput ? { callsPerMonth: positive(callsInput, "calls-per-month") } : {}),
+    });
+    const card = formatSlimMarkdown(result);
+    await summary(card);
+    const passed = result.prompts.filter((p) => p.best);
+    log(passed.length ? `AI Change Guard prompt slimming: ${passed.length} shorter system prompt(s) passed` : "AI Change Guard prompt slimming: no shorter prompt passed");
+    // One pull request, for the prompt that saves the most (dollars when every one is priced, else the share); the card lists the others.
+    const byMoney = passed.every((p) => p.best!.monthlySaving !== undefined);
+    const worth = (p: (typeof passed)[number]) => (byMoney ? p.best!.monthlySaving! : (p.best!.savingShare ?? 0));
+    const top = passed.sort((a, b) => worth(b) - worth(a))[0];
+    if (openPr && top) {
+      const notice = (text: string) => log(`::notice::AI Change Guard: ${text}`);
+      const edit = top.skippedPrompts.length > 0 ? undefined : await planPromptEdit(scanRoot, top.system, top.best!.prompt);
+      const flat = top.system.replace(/\s+/g, " ").trim();
+      const label = flat.length <= 40 ? flat : `${flat.slice(0, 40).replace(/\s+\S*$/, "")}…`;
+      const short = (t: string) => t.replace(/\s+/g, " ").trim().slice(0, 80);
+      if (!edit) notice(`no pull request, because ${oldModel} did not answer ${top.skippedPrompts.length} prompt(s), so the comparison is incomplete.`);
+      else if (edit.edits.length === 0) {
+        notice(edit.skipped.length ? `no pull request: ${edit.skipped[0]!.file}:${edit.skipped[0]!.line}: ${edit.skipped[0]!.reason}.` : "no pull request, because the system prompt is not written as one string in the code (it may be built at runtime); paste the shorter one from the Summary by hand.");
+      } else {
+        const pr = await openEvidencePr({
+          api: github ?? githubApi(token, env.GITHUB_API_URL),
+          repo: env.GITHUB_REPOSITORY ?? "",
+          ref: env.GITHUB_REF ?? "",
+          sha: env.GITHUB_SHA ?? "",
+          workspace,
+          scanPath: relative(workspace, scanRoot).split(sep).join("/"),
+          plan: {
+            from: short(top.system),
+            to: short(top.best!.prompt),
+            edits: edit.edits.map((e) => ({ ...e, before: short(top.system), after: short(top.best!.prompt) })),
+            skipped: edit.skipped.map((e) => ({ ...e, raw: short(top.system) })),
+            files: edit.files,
+          },
+          replay: top.best!.report!,
+          extra: card.replace(/^## .*\n\n/, ""),
+          text: {
+            subject: `Shorten the system prompt "${label}"`,
+            branch: `ai-change-guard/slim-prompt-${createHash("sha1").update(top.system).digest("hex").slice(0, 10)}`,
+            heading: "A shorter system prompt, tested on your real prompts",
+            replayed: `on \`${oldModel}\` with the current and the shorter system prompt`,
+            beforeMerge: [
+              "- The shorter prompt was written by an AI model and passed your golden set: read it once to check it still says what you mean.",
+              "- Prompts built at runtime, joined from several strings or written with escape sequences are not changed; they are listed above.",
+            ],
+          },
+        });
+        if (pr.action === "skipped") notice(`no pull request. ${pr.reason}`);
+        else {
+          log(`AI Change Guard ${pr.action} pull request #${pr.number}: ${pr.url}`);
+          await summary(`**Shorter prompt pull request ${pr.action}:** [#${pr.number}](${pr.url})`);
+        }
+      }
+    }
+    return failed ? 1 : 0;
   }
 
   if (oneOf(input("find-savings", env) || "false", "find-savings", ["true", "false"]) === "true") {

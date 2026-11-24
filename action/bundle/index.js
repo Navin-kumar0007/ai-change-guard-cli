@@ -28947,15 +28947,15 @@ var require_windows = __commonJS({
       }
       return false;
     }
-    function checkStat(stat2, path, options) {
-      if (!stat2.isSymbolicLink() && !stat2.isFile()) {
+    function checkStat(stat3, path, options) {
+      if (!stat3.isSymbolicLink() && !stat3.isFile()) {
         return false;
       }
       return checkPathExt(path, options);
     }
     function isexe(path, options, cb) {
-      fs.stat(path, function(er, stat2) {
-        cb(er, er ? false : checkStat(stat2, path, options));
+      fs.stat(path, function(er, stat3) {
+        cb(er, er ? false : checkStat(stat3, path, options));
       });
     }
     function sync(path, options) {
@@ -28971,20 +28971,20 @@ var require_mode = __commonJS({
     isexe.sync = sync;
     var fs = __require("fs");
     function isexe(path, options, cb) {
-      fs.stat(path, function(er, stat2) {
-        cb(er, er ? false : checkStat(stat2, options));
+      fs.stat(path, function(er, stat3) {
+        cb(er, er ? false : checkStat(stat3, options));
       });
     }
     function sync(path, options) {
       return checkStat(fs.statSync(path), options);
     }
-    function checkStat(stat2, options) {
-      return stat2.isFile() && checkMode(stat2, options);
+    function checkStat(stat3, options) {
+      return stat3.isFile() && checkMode(stat3, options);
     }
-    function checkMode(stat2, options) {
-      var mod = stat2.mode;
-      var uid = stat2.uid;
-      var gid = stat2.gid;
+    function checkMode(stat3, options) {
+      var mod = stat3.mode;
+      var uid = stat3.uid;
+      var gid = stat3.gid;
       var myUid = options.uid !== void 0 ? options.uid : process.getuid && process.getuid();
       var myGid = options.gid !== void 0 ? options.gid : process.getgid && process.getgid();
       var u = parseInt("100", 8);
@@ -29646,7 +29646,7 @@ var init_stdio = __esm({
 });
 
 // action/src/main.ts
-import { appendFile, readFile as readFile5 } from "node:fs/promises";
+import { appendFile, readFile as readFile6 } from "node:fs/promises";
 import { relative as relative2, resolve, sep as sep2 } from "node:path";
 
 // packages/llm/dist/index.js
@@ -30130,11 +30130,13 @@ async function runReplay(options) {
   if (total > maxCalls) {
     throw new SpendCapError(`This replay needs ${total} AI calls, above the limit of ${maxCalls}. Lower --runs, use fewer prompts, or raise --max-calls.`);
   }
+  const newById = new Map((options.newItems ?? []).map((i) => [i.id, i]));
   const tasks = [];
   for (const item of options.items) {
     for (let run2 = 0; run2 < runs; run2++) {
       for (const side of sides) {
-        const request = requestFor(item, side === "old" ? options.oldModel : options.newModel, options.defaultMaxTokens ?? 1024);
+        const sent = side === "new" ? newById.get(item.id) ?? item : item;
+        const request = requestFor(sent, side === "old" ? options.oldModel : options.newModel, options.defaultMaxTokens ?? 1024);
         tasks.push(async () => {
           try {
             return { itemId: item.id, side, run: run2, response: await options.client(request) };
@@ -30969,6 +30971,214 @@ function formatSavingsMarkdown(result) {
   return out.join("\n");
 }
 
+// packages/replay/dist/slim.js
+var MIN_SLIM_ITEMS = 3;
+var MIN_SHRINK = 0.1;
+var MIN_SAVING2 = 0.03;
+var ANY_RUN2 = 0.01;
+var SLIM_STYLES = ["concise", "minimal"];
+var TARGET = {
+  concise: "about 30% shorter",
+  minimal: "as short as it can be, about half its length or less"
+};
+var PLACEHOLDER_RE = /\$\{[^}]*\}|\{\{[^{}]*\}\}|\{[A-Za-z_][\w.]*\}/g;
+function placeholders(text) {
+  return [...text.matchAll(PLACEHOLDER_RE)].map((m) => m[0]).sort();
+}
+function slimRequest(system, style) {
+  return [
+    "Below is the system prompt of one feature in an app. It is sent with every call, so every word costs money.",
+    "",
+    "<system_prompt>",
+    system,
+    "</system_prompt>",
+    "",
+    `Rewrite it ${TARGET[style]}, without changing what the model does or how it answers.`,
+    "Keep: every rule, limit and refusal; the output format, JSON keys and field names; the structure of any examples;",
+    "every template placeholder exactly as written ({name}, {{name}}, ${name}); names, numbers and links; the language it is written in.",
+    "Remove: repetition, filler, politeness, explanations meant for people, and words that do not change the answer.",
+    'Reply with only JSON: {"prompt": "..."}'
+  ].join("\n");
+}
+function parseSlimAnswer(text) {
+  const pick2 = (value) => {
+    const p = value && typeof value === "object" ? value.prompt : void 0;
+    return typeof p === "string" && p.trim() ? p.trim() : void 0;
+  };
+  const parsed = extractJson(text);
+  if (parsed.ok)
+    return pick2(parsed.value);
+  const m = /\{[\s\S]*\}/.exec(text);
+  const retry = m ? extractJson(m[0]) : parsed;
+  return retry.ok ? pick2(retry.value) : void 0;
+}
+function rewriteProblem(original, rewrite) {
+  if (!rewrite.trim())
+    return "the rewrite is empty";
+  if (rewrite.length > original.length * (1 - MIN_SHRINK))
+    return `only ${Math.max(0, Math.round((1 - rewrite.length / original.length) * 100))}% shorter`;
+  const a = placeholders(original).join("\n");
+  const b = placeholders(rewrite).join("\n");
+  if (a !== b)
+    return "the rewrite changed the template placeholders";
+  return void 0;
+}
+function plannedSlimCalls(itemsPerPrompt, runs, styles) {
+  return itemsPerPrompt.reduce((n, items) => n + styles + plannedCalls(items, runs, 1) * (1 + styles), 0);
+}
+function groupBySystem(items) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const item of items) {
+    if (!item.system?.trim())
+      continue;
+    const list = groups.get(item.system);
+    if (list)
+      list.push(item);
+    else
+      groups.set(item.system, [item]);
+  }
+  return [...groups].map(([system, list]) => ({ system, items: list })).sort((a, b) => b.items.length - a.items.length);
+}
+async function slimPrompts(options) {
+  const { model, client } = options;
+  const writer = options.writer ?? model;
+  parseModelRef(model);
+  parseModelRef(writer);
+  const today = options.today ?? localToday();
+  const runs = options.runs ?? 3;
+  const styles = [...new Set(options.styles ?? SLIM_STYLES)];
+  const maxCalls = options.maxCalls ?? 500;
+  const groups = groupBySystem(options.items);
+  const withSystem = groups.reduce((n, g) => n + g.items.length, 0);
+  const common = { client, runs, ...options.concurrency ? { concurrency: options.concurrency } : {}, ...options.signal ? { signal: options.signal } : {} };
+  const prompts = [];
+  const testable = [];
+  for (const group of groups) {
+    const out = { system: group.system, items: group.items.length, variants: [], skippedPrompts: [] };
+    prompts.push(out);
+    if (group.items.length < MIN_SLIM_ITEMS)
+      out.reason = `only ${group.items.length} prompt${group.items.length === 1 ? "" : "s"} use${group.items.length === 1 ? "s" : ""} it; at least ${MIN_SLIM_ITEMS} are needed to prove a shorter one`;
+    else if (testable.length >= (options.maxPrompts ?? 3))
+      out.reason = "not tested this time (more system prompts than --max-prompts)";
+    else
+      testable.push({ group, out });
+  }
+  const planned = plannedSlimCalls(testable.map((t) => t.group.items.length), runs, styles.length);
+  if (planned > maxCalls) {
+    throw new SpendCapError(`Slimming ${testable.length} system prompt${testable.length === 1 ? "" : "s"} needs up to ${planned} calls, above the limit of ${maxCalls}. Use fewer runs or prompts, or raise the limit.`);
+  }
+  let calls = 0;
+  for (const { group, out } of testable) {
+    const oldRecords = await runReplay({ ...common, items: group.items, oldModel: model, newModel: model, sides: ["old"], maxCalls });
+    calls += oldRecords.length;
+    const answered = new Set(oldRecords.filter((r) => r.response).map((r) => r.itemId));
+    if (answered.size === 0) {
+      out.reason = `${model} did not answer any of its prompts (${(oldRecords[0]?.error ?? "no calls").slice(0, 120)})`;
+      continue;
+    }
+    const items = group.items.filter((i) => answered.has(i.id));
+    out.skippedPrompts = group.items.filter((i) => !answered.has(i.id)).map((i) => i.id);
+    const tried = /* @__PURE__ */ new Set();
+    for (const style of styles) {
+      let prompt = "";
+      try {
+        calls++;
+        const res = await client({
+          model: writer,
+          system: "You shorten the system prompts of AI apps without changing what they make the model do.",
+          messages: [{ role: "user", content: slimRequest(group.system, style) }],
+          maxTokens: Math.min(8e3, Math.max(1e3, Math.ceil(group.system.length / 2))),
+          jsonMode: true
+        });
+        prompt = parseSlimAnswer(res.text) ?? "";
+      } catch (error2) {
+        out.variants.push({ style, prompt: "", qualifies: false, reason: `the writer failed: ${(error2 instanceof Error ? error2.message : String(error2)).slice(0, 120)}` });
+        continue;
+      }
+      const problem = !prompt ? "the writer did not return a prompt" : tried.has(prompt) ? "same rewrite as the one before" : rewriteProblem(group.system, prompt);
+      if (problem) {
+        out.variants.push({ style, prompt, qualifies: false, reason: problem });
+        continue;
+      }
+      tried.add(prompt);
+      const newItems = items.map((i) => ({ ...i, system: prompt }));
+      const records = await runReplay({ ...common, items, newItems, oldModel: model, newModel: model, sides: ["new"], maxCalls: plannedCalls(items.length, runs, 1) });
+      calls += records.length;
+      const report = buildReplayReport(items, [...oldRecords, ...records], { oldModel: model, newModel: model, runs, judge: { share: ANY_RUN2 }, today });
+      const t = report.totals;
+      const compared = report.items.length || 1;
+      const changedShare = t.changed / compared;
+      const inputTokens = { old: report.avgTokens.old.input, new: report.avgTokens.new.input };
+      const current = steadyCost(model, report.avgTokens.old, today);
+      const candidate = steadyCost(model, report.avgTokens.new, today);
+      const priced = current !== void 0 && candidate !== void 0 && report.comparedPrompts > 0 ? { current, candidate } : void 0;
+      const savingShare = priced ? priced.current > 0 ? 1 - priced.candidate / priced.current : void 0 : inputTokens.old > 0 && report.comparedPrompts > 0 ? 1 - inputTokens.new / inputTokens.old : void 0;
+      const firstBroken = report.items.find((i) => i.verdict === "broken");
+      const reason = records.length > 0 && records.every((r) => r.error) ? `every call failed: ${(records[0].error ?? "").slice(0, 120)}` : t.broken > 0 ? `${t.broken} prompt${t.broken === 1 ? "" : "s"} broken in at least one run (first: ${firstBroken.id}, ${(firstBroken.reasons[0]?.detail ?? firstBroken.error ?? "").slice(0, 120)})` : t.error > 0 ? `${t.error} prompt${t.error === 1 ? "" : "s"} could not be compared` : changedShare > MAX_CHANGED_SHARE ? `${t.changed} of ${compared} prompts answered differently (more than ${Math.round(MAX_CHANGED_SHARE * 100)}%)` : savingShare === void 0 ? "no token counts came back, so the saving could not be measured" : savingShare < MIN_SAVING2 ? savingShare < 0 ? `costs more per call on your prompts (+${Math.round(-savingShare * 100)}%): longer answers outweigh the shorter prompt` : `only ${Math.round(savingShare * 100)}% cheaper per call on your prompts` : void 0;
+      const share = withSystem > 0 ? group.items.length / withSystem : 0;
+      out.variants.push({
+        style,
+        prompt,
+        qualifies: !reason,
+        ...reason ? { reason } : {},
+        report,
+        changedShare,
+        inputTokens,
+        ...priced ? { costPerCall: priced } : {},
+        ...savingShare !== void 0 ? { savingShare } : {},
+        ...priced && options.callsPerMonth !== void 0 ? { monthlySaving: (priced.current - priced.candidate) * options.callsPerMonth * share } : {}
+      });
+    }
+    const best = out.variants.filter((v) => v.qualifies).sort((a, b) => (b.savingShare ?? 0) - (a.savingShare ?? 0))[0];
+    if (best)
+      out.best = best;
+  }
+  return { model, writer, runs, calls, prompts, withoutSystem: options.items.length - withSystem, ...options.callsPerMonth !== void 0 ? { callsPerMonth: options.callsPerMonth } : {} };
+}
+function usd2(amount) {
+  return amount >= 100 ? `$${Math.round(amount).toLocaleString("en-US")}` : formatUsd(amount);
+}
+function preview(text, max = 70) {
+  const one = text.replace(/\s+/g, " ").trim();
+  return one.length > max ? `${one.slice(0, max - 1)}\u2026` : one;
+}
+function savingText2(v) {
+  const pct = Math.round((v.savingShare ?? 0) * 100);
+  const tokens = v.inputTokens ? `${Math.round(v.inputTokens.old)} \u2192 ${Math.round(v.inputTokens.new)} input tokens per call` : "";
+  const cost = v.costPerCall ? `, ${usd2(v.costPerCall.current)} \u2192 ${usd2(v.costPerCall.candidate)} per call` : "";
+  const month = v.monthlySaving !== void 0 ? `, about ${usd2(v.monthlySaving)} a month` : "";
+  return `${pct}% ${v.costPerCall ? "cheaper per call" : "fewer input tokens"} (${tokens}${cost}${month})`;
+}
+function verdictLine2(v) {
+  const t = v.report.totals;
+  return `${t.same} same \xB7 ${t.changed} changed \xB7 ${t.broken} broken on ${v.report.items.length} prompts`;
+}
+function formatSlimMarkdown(result) {
+  const out = [`## Prompt slimming: \`${result.model}\``, ""];
+  if (result.prompts.length === 0)
+    return [...out, "No prompt in the golden set has a system prompt, so there is nothing to slim."].join("\n");
+  for (const p of result.prompts) {
+    out.push(`### "${preview(p.system, 60).replace(/[`|]/g, "'")}" (${p.system.length} characters, ${p.items} prompt${p.items === 1 ? "" : "s"})`, "");
+    if (p.reason) {
+      out.push(`Not tested: ${p.reason}.`, "");
+      continue;
+    }
+    if (p.best) {
+      out.push(`**Use the ${p.best.style} rewrite (${p.best.prompt.length} characters): ${savingText2(p.best)}.**`, "", `On your real prompts, with your model: ${verdictLine2(p.best)}, ${result.runs} runs each.`, "");
+      out.push("<details><summary>The shorter prompt</summary>", "", "```text", p.best.prompt.replace(/```/g, "'''"), "```", "", "</details>", "");
+    } else
+      out.push("**No shorter prompt answered your prompts the same way.** Keep the prompt you have.", "");
+    out.push("| Rewrite | Result |", "| --- | --- |");
+    for (const v of p.variants)
+      out.push(`| ${v.style} (${v.prompt.length} chars) | ${v.qualifies ? `Passes: ${verdictLine2(v)}, ${savingText2(v)}` : `Skipped: ${(v.reason ?? "").replace(/\|/g, "/")}`} |`);
+    if (p.skippedPrompts.length)
+      out.push("", `> **Warning:** ${result.model} did not answer ${p.skippedPrompts.length} prompt(s), so they were not compared.`);
+    out.push("");
+  }
+  out.push(`Rewrites by \`${result.writer}\`. List prices at the higher of today's and the price two months out; no batch, cache or volume discounts.`);
+  return out.join("\n");
+}
+
 // packages/scanner/dist/detect.js
 var NOT_MODELS = /* @__PURE__ */ new Set(["claude-code", "claude-desktop", "gemini-cli", "gemini-code-assist"]);
 var GATEWAY_PLATFORMS = {
@@ -31162,7 +31372,7 @@ function scanText(file, content, kind, apiRules) {
 }
 
 // packages/scanner/dist/scan.js
-import { readFile as readFile2, stat } from "node:fs/promises";
+import { readFile as readFile3, stat as stat2 } from "node:fs/promises";
 import { join as join2 } from "node:path";
 
 // packages/scanner/dist/deps.js
@@ -31763,6 +31973,9 @@ function groupLockChanges(changes) {
 // packages/scanner/dist/security.js
 import { basename as basename3 } from "node:path";
 
+// packages/scanner/dist/prompts.js
+import { readFile as readFile2, stat } from "node:fs/promises";
+
 // packages/scanner/dist/walk.js
 import { readdir } from "node:fs/promises";
 import { basename as basename2, extname, join, relative, sep } from "node:path";
@@ -31862,6 +32075,7 @@ async function* walk(root) {
 // packages/scanner/dist/prompts.js
 var MIN_CHARS = 30;
 var MAX_CHARS = 8e3;
+var MAX_FILE_BYTES = 1e6;
 var Q3 = "'''";
 var OPEN = String.raw`([rRfFbBuU]{0,2})("""|` + Q3 + String.raw`|\x60|"|')`;
 var STARTS = [
@@ -31918,18 +32132,20 @@ function readJoined(content, start, prefix, quote, goRaw) {
   if (!lit)
     return null;
   let text = lit.text;
+  let pieces = 1;
   for (let guard = 0; guard < 50; guard++) {
     const rest = content.slice(lit.end, lit.end + 2e3);
     const next = NEXT_LITERAL.exec(rest);
     if (!next)
-      return { text, partial: JOINED_WITH_CODE.test(rest) };
+      return { text, partial: JOINED_WITH_CODE.test(rest), pieces, end: lit.end };
     const nextLit = readLiteral(content, lit.end + next[0].length, next[3], raw(next[3], next[2]));
     if (!nextLit)
-      return { text, partial: false };
+      return { text, partial: false, pieces, end: lit.end };
     text += nextLit.text;
     lit = nextLit;
+    pieces++;
   }
-  return { text, partial: false };
+  return { text, partial: false, pieces, end: lit.end };
 }
 function dedent(text) {
   const lines = text.replace(/^\n/, "").split("\n");
@@ -31982,13 +32198,87 @@ function findPromptsInText(file, content) {
       const templated = /\$\{[^}]+\}|\{[A-Za-z_][\w.]*\}/.test(text);
       if (templated && !/system|instruction|persona|content/i.test(name))
         continue;
-      found.push({ file, line: lineAt(m.index), name, text, json: false, templated, partial: joined.partial });
+      const prompt = { file, line: lineAt(m.index), name, text, json: false, templated, partial: joined.partial };
+      if (joined.pieces === 1 && !joined.partial)
+        prompt.literal = { start: open2, end: joined.end, quote, prefix };
+      found.push(prompt);
     }
   }
   const fileParsesJson = JSON_SIGNS.test(content);
   for (const p of found)
     p.json = /\bjson\b/i.test(p.text) || fileParsesJson && found.length === 1;
   return found.sort((a, b) => a.line - b.line);
+}
+var BY_HAND = "change it by hand";
+function rewritePromptLiteral(content, prompt, text) {
+  const lit = prompt.literal;
+  if (!lit)
+    return { reason: `it is joined from several strings or with code; ${BY_HAND}` };
+  const inner = content.slice(lit.start, lit.end - lit.quote.length);
+  if (inner.includes("\\"))
+    return { reason: `it is written with escape sequences; ${BY_HAND}` };
+  if (dedent(inner) !== prompt.text)
+    return { reason: `the code changed since it was read; run again` };
+  const next = text.replace(/\r\n?/g, "\n").trim();
+  const isRaw = /r/i.test(lit.prefix) || prompt.file.endsWith(".go") && lit.quote === "`";
+  const multi = lit.quote.length === 3 || lit.quote === "`";
+  const fString = /f/i.test(lit.prefix);
+  if (fString && /[{}]/.test(next.replace(/\{\{[^{}]*\}\}|\{[A-Za-z_][\w.]*\}/g, "")))
+    return { reason: `an f-string, and the new text has braces that are not placeholders; ${BY_HAND}` };
+  let body;
+  if (multi) {
+    if (lit.quote.length === 3 && next.includes(lit.quote))
+      return { reason: `the new text contains ${lit.quote}; ${BY_HAND}` };
+    const goRaw = prompt.file.endsWith(".go") && lit.quote === "`";
+    if (goRaw && next.includes("`"))
+      return { reason: `the new text contains a backtick, which a Go raw string can't hold; ${BY_HAND}` };
+    const doubled = isRaw ? next : next.replace(/\\/g, "\\\\");
+    const escaped = lit.quote === "`" && !goRaw ? doubled.replace(/`/g, "\\`") : doubled;
+    const leading = inner.startsWith("\n") ? "\n" : "";
+    const lines = inner.replace(/^\n/, "").split("\n");
+    const indents = lines.filter((l) => l.trim()).map((l) => /^[ \t]*/.exec(l)[0]);
+    const indent = indents.length ? indents.reduce((a, b) => b.length < a.length ? b : a) : "";
+    const tail = /\n[ \t]*$/.exec(inner)?.[0] ?? "";
+    const rows = escaped.split("\n").map((l, i) => !l.trim() ? "" : i === 0 && !leading ? l : indent + l);
+    body = leading + rows.join("\n") + tail;
+  } else {
+    if (/r/i.test(lit.prefix) && (/[\n\\]/.test(next) || next.includes(lit.quote)))
+      return { reason: `a raw string can't hold this text; ${BY_HAND}` };
+    body = next.replace(/\\/g, "\\\\").replace(new RegExp(lit.quote, "g"), `\\${lit.quote}`).replace(/\n/g, "\\n").replace(/\t/g, "\\t").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+  }
+  const updated = content.slice(0, lit.start) + body + content.slice(lit.end - lit.quote.length);
+  const back = readLiteral(updated, lit.start, lit.quote, isRaw);
+  if (!back || back.end !== lit.start + body.length + lit.quote.length || dedent(back.text) !== next)
+    return { reason: `could not write it back exactly; ${BY_HAND}` };
+  return { content: updated };
+}
+async function planPromptEdit(root, from, to) {
+  const plan = { edits: [], skipped: [], files: /* @__PURE__ */ new Map() };
+  const want = dedent(from);
+  for await (const file of walk(root)) {
+    if (file.kind !== "code")
+      continue;
+    if ((await stat(file.path)).size > MAX_FILE_BYTES)
+      continue;
+    let content = await readFile2(file.path, "utf8");
+    const places = findPromptsInText(file.rel, content).filter((p) => p.text === want).sort((a, b) => (b.literal?.start ?? 0) - (a.literal?.start ?? 0));
+    let changed = false;
+    for (const place of places) {
+      const result = rewritePromptLiteral(content, place, to);
+      if ("reason" in result)
+        plan.skipped.push({ file: file.rel, line: place.line, reason: result.reason });
+      else {
+        content = result.content;
+        changed = true;
+        plan.edits.push({ file: file.rel, line: place.line });
+      }
+    }
+    if (changed)
+      plan.files.set(file.rel, content);
+  }
+  plan.edits.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
+  plan.skipped.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
+  return plan;
 }
 
 // packages/scanner/dist/security.js
@@ -32038,7 +32328,7 @@ var KEY_PATTERNS = [
   { provider: "Groq", re: /\bgsk_[A-Za-z0-9]{48,}\b/g },
   { provider: "xAI", re: /\bxai-[A-Za-z0-9]{70,}\b/g }
 ];
-var PLACEHOLDER_RE = /x{6,}|0{8,}|\.\.\.|your|example|placeholder|dummy|fake|redacted|<|>/i;
+var PLACEHOLDER_RE2 = /x{6,}|0{8,}|\.\.\.|your|example|placeholder|dummy|fake|redacted|<|>/i;
 var PUBLIC_ENV_RE = /\b(?:NEXT_PUBLIC|VITE|REACT_APP|EXPO_PUBLIC|NUXT_PUBLIC|GATSBY|PUBLIC)_[A-Z0-9_]*(?:OPENAI|ANTHROPIC|CLAUDE|GEMINI|GOOGLE_AI|GENAI|GROQ|MISTRAL|OPENROUTER|XAI|DEEPSEEK|COHERE|PERPLEXITY)[A-Z0-9_]*(?:KEY|TOKEN|SECRET)\b/;
 var BROWSER_FLAG_RE = /\bdangerouslyAllowBrowser\s*:\s*true\b/;
 function isLocalEnvFile(file) {
@@ -32046,7 +32336,7 @@ function isLocalEnvFile(file) {
 }
 var isEnvFile = (file) => /^\.env(?:\.[\w-]+)*$/.test(basename3(file).toLowerCase());
 function looksReal(key) {
-  if (PLACEHOLDER_RE.test(key))
+  if (PLACEHOLDER_RE2.test(key))
     return false;
   const body = key.replace(/^[a-z]+[-_](?:[a-z]+\d*-)?/i, "");
   return new Set(body).size >= 12 && /\d/.test(body) && /[A-Za-z]/.test(body);
@@ -32248,8 +32538,8 @@ function findSecurityIssues(file, content, kind) {
   for (const p of findPromptsInText(file, content)) {
     if (!p.templated)
       continue;
-    const placeholders = [...p.text.matchAll(/\$\{([^}]+)\}|\{([A-Za-z_][\w.[\]'"]*)\}/g)].map((m) => (m[1] ?? m[2] ?? "").trim());
-    const user = placeholders.find((name) => USER_INPUT_NAME_RE.test(name));
+    const placeholders2 = [...p.text.matchAll(/\$\{([^}]+)\}|\{([A-Za-z_][\w.[\]'"]*)\}/g)].map((m) => (m[1] ?? m[2] ?? "").trim());
+    const user = placeholders2.find((name) => USER_INPUT_NAME_RE.test(name));
     if (user)
       add(p.line - 1, "user-input-in-system-prompt", `{${user}} inside ${p.name}`);
   }
@@ -32400,20 +32690,20 @@ function findTokenTips(file, content, kind) {
 }
 
 // packages/scanner/dist/scan.js
-var MAX_FILE_BYTES = 1e6;
+var MAX_FILE_BYTES2 = 1e6;
 var MAX_LOCKFILE_BYTES = 3e7;
 async function scanDirectory(root) {
-  const info = await stat(root).catch(() => null);
+  const info = await stat2(root).catch(() => null);
   if (!info?.isDirectory())
     throw new Error(`Not a folder: ${root}`);
   const rules = compileApiRules(apis);
   const result = { root, filesScanned: 0, aiFiles: 0, callSites: 0, findings: [], tokenTips: [], security: [], dependencies: [], baselines: [], mcpServers: [] };
   const ownPackages = /* @__PURE__ */ new Set();
   for await (const file of walk(root)) {
-    const size = (await stat(file.path)).size;
-    if (size > (file.lock ? MAX_LOCKFILE_BYTES : MAX_FILE_BYTES))
+    const size = (await stat2(file.path)).size;
+    if (size > (file.lock ? MAX_LOCKFILE_BYTES : MAX_FILE_BYTES2))
       continue;
-    const content = await readFile2(file.path, "utf8");
+    const content = await readFile3(file.path, "utf8");
     if (content.includes("\0"))
       continue;
     if (file.rel.endsWith(".baseline.json")) {
@@ -32447,8 +32737,8 @@ async function scanDirectory(root) {
       result.mcpServers.push(...parseMcpServers(file.rel, content));
   }
   result.dependencies = result.dependencies.filter((d) => !(d.ecosystem === "npm" && ownPackages.has(d.name)));
-  const npmrc = await readFile2(join2(root, ".npmrc"), "utf8").catch(() => "");
-  const lockText = await readFile2(join2(root, LOCK_FILE), "utf8").catch(() => void 0);
+  const npmrc = await readFile3(join2(root, ".npmrc"), "utf8").catch(() => "");
+  const lockText = await readFile3(join2(root, LOCK_FILE), "utf8").catch(() => void 0);
   if (lockText !== void 0)
     result.lockText = lockText;
   const registries = privateRegistries(npmrc);
@@ -32818,7 +33108,7 @@ function buildCheck(report, changedFiles) {
 }
 
 // packages/scanner/dist/switch.js
-import { readFile as readFile3, writeFile } from "node:fs/promises";
+import { readFile as readFile4, writeFile } from "node:fs/promises";
 import { join as join3 } from "node:path";
 var MODEL_ID_RE = /^[A-Za-z0-9][\w.\-:@]{0,119}$/;
 var ID_CHAR_BEFORE = /[\w.\-@]/;
@@ -32896,7 +33186,7 @@ async function planSwitch(root, findings, from, to, opts = {}) {
     const kind = fileKind(file);
     if (!kind)
       continue;
-    const lines = (await readFile3(join3(root, file), "utf8")).split("\n");
+    const lines = (await readFile4(join3(root, file), "utf8")).split("\n");
     let changed = false;
     for (const [lineNo, lineFindings] of uses) {
       const original = lines[lineNo - 1];
@@ -33044,9 +33334,12 @@ async function listMcpTools(servers, options) {
   return out.sort((a, b) => `${a.file}|${a.name}` < `${b.file}|${b.name}` ? -1 : 1);
 }
 
+// action/src/main.ts
+import { createHash as createHash4 } from "node:crypto";
+
 // action/src/pr.ts
 import { createHash as createHash3 } from "node:crypto";
-import { readFile as readFile4 } from "node:fs/promises";
+import { readFile as readFile5 } from "node:fs/promises";
 import { join as join5, posix } from "node:path";
 var GitHubError = class extends Error {
   constructor(status, message2) {
@@ -33087,22 +33380,22 @@ function code2(text) {
 function listed(items, render, more) {
   return [...items.slice(0, MAX_LISTED).map(render), ...items.length > MAX_LISTED ? [`- \u2026and ${items.length - MAX_LISTED} more ${more}`] : []];
 }
-function evidenceBody(plan, replay, scanPath, note, extra) {
+function evidenceBody(plan, replay, scanPath, note, extra, text) {
   const where = (file, line) => `\`${posix.join(scanPath || ".", file)}:${line}\``;
   const t = replay.totals;
   const prompts = replay.items.length;
   const lines = [
     ...note ? [`> ${note}`, ""] : [],
-    `## Switch \`${plan.from}\` to \`${plan.to}\``,
+    text ? `## ${text.heading}` : `## Switch \`${plan.from}\` to \`${plan.to}\``,
     "",
     ...extra ? [extra, ""] : [],
-    `Before opening this pull request, AI Change Guard replayed **${prompts} of your real prompt${prompts === 1 ? "" : "s"}** ${replay.runs} time${replay.runs === 1 ? "" : "s"} each on \`${replay.oldModel}\` and \`${replay.newModel}\`.`,
+    `Before opening this pull request, AI Change Guard replayed **${prompts} of your real prompt${prompts === 1 ? "" : "s"}** ${replay.runs} time${replay.runs === 1 ? "" : "s"} each ${text ? text.replayed : `on \`${replay.oldModel}\` and \`${replay.newModel}\``}.`,
     "",
     "| Same | Changed | Broken | Errors |",
     "| ---: | ---: | ---: | ---: |",
     `| ${t.same} | ${t.changed} | ${t.broken} | ${t.error} |`,
     "",
-    t.changed > 0 ? `**${t.changed} prompt${t.changed === 1 ? "" : "s"} answered differently but passed your checks.** Read them in the full report below before merging.` : "Every prompt passed your checks with the same kind of answer on both models.",
+    t.changed > 0 ? `**${t.changed} prompt${t.changed === 1 ? "" : "s"} answered differently but passed your checks.** Read them in the full report below before merging.` : text ? "Every prompt passed your checks with the same kind of answer as before." : "Every prompt passed your checks with the same kind of answer on both models.",
     "",
     `### Code changes (${plan.edits.length})`,
     "",
@@ -33116,8 +33409,10 @@ function evidenceBody(plan, replay, scanPath, note, extra) {
     "",
     "### Before you merge",
     "",
-    `- Settings are not checked yet: make sure every option you pass (temperature, max_tokens, tools, \u2026) is supported by \`${plan.to}\`.`,
-    "- Model IDs built at runtime (from variables or environment) are not changed; search for them by hand.",
+    ...text?.beforeMerge ?? [
+      `- Settings are not checked yet: make sure every option you pass (temperature, max_tokens, tools, \u2026) is supported by \`${plan.to}\`.`,
+      "- Model IDs built at runtime (from variables or environment) are not changed; search for them by hand."
+    ],
     "- A pull request opened with the default workflow token does not start other workflows. Close and reopen it, or give the Action a `github-token` from a GitHub App or a personal token, to run your CI on it.",
     ""
   );
@@ -33151,7 +33446,7 @@ async function trackedOnly(input2) {
   for (const [file, content] of plan.files) {
     const path = posix.join(input2.scanPath || ".", file);
     const entry = tracked.get(path);
-    const reason = !entry ? "Not committed in the repository (untracked or gitignored), so it is left out of the PR." : gitBlobSha(await readFile4(join5(input2.workspace, path))) !== entry.sha ? "Changed by an earlier step of this job, so it is left out of the PR." : null;
+    const reason = !entry ? "Not committed in the repository (untracked or gitignored), so it is left out of the PR." : gitBlobSha(await readFile5(join5(input2.workspace, path))) !== entry.sha ? "Changed by an earlier step of this job, so it is left out of the PR." : null;
     const edits = plan.edits.filter((e) => e.file === file);
     if (reason) {
       keep.skipped.push(...edits.map((e) => ({ file, line: e.line, raw: plan.from, reason })));
@@ -33176,14 +33471,14 @@ async function openEvidencePr(input2) {
   }
   const { plan, modes } = await trackedOnly(input2);
   if (plan.files.size === 0) return { action: "skipped", reason: "None of the files to change are committed and unchanged in the repository." };
-  const branch = branchName(plan.from, plan.to);
+  const branch = input2.text?.branch ?? branchName(plan.from, plan.to);
   const owner = repo.split("/")[0];
   const t = replay.totals;
-  const subject = `Switch ${plan.from} to ${plan.to}`;
+  const subject = input2.text?.subject ?? `Switch ${plan.from} to ${plan.to}`;
   const message2 = `${subject}
 
 Replayed ${replay.items.length} prompt${replay.items.length === 1 ? "" : "s"} x ${replay.runs} run${replay.runs === 1 ? "" : "s"} with AI Change Guard: ${t.same} same, ${t.changed} changed, ${t.broken} broken.`;
-  const body = evidenceBody(plan, replay, input2.scanPath, void 0, input2.extra);
+  const body = evidenceBody(plan, replay, input2.scanPath, void 0, input2.extra, input2.text);
   const listPulls = () => api("GET", `/repos/${repo}/pulls?state=all&per_page=20&head=${encodeURIComponent(`${owner}:${branch}`)}`);
   const ownsBranch = async () => {
     const cmp = await api(
@@ -33203,13 +33498,18 @@ Replayed ${replay.items.length} prompt${replay.items.length === 1 ? "" : "s"} x 
     const newTree = await api("POST", `/repos/${repo}/git/trees`, { base_tree: parent.tree.sha, tree });
     return (await api("POST", `/repos/${repo}/git/commits`, { message: message2, tree: newTree.sha, parents: [input2.sha] })).sha;
   };
+  const branchHasFiles = async () => {
+    const tree = await api("GET", `/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
+    const shas = new Map(tree.tree.map((e) => [e.path, e.sha]));
+    return [...plan.files].every(([file, content]) => shas.get(posix.join(input2.scanPath || ".", file)) === gitBlobSha(Buffer.from(content)));
+  };
   const refresh = async (pr) => {
     const { owned, behind } = await ownsBranch();
-    if (owned && behind > 0) {
+    if (owned && (behind > 0 || input2.text && !await branchHasFiles())) {
       await api("PATCH", `/repos/${repo}/git/refs/heads/${branch}`, { sha: await commit(), force: true });
     }
     const note = owned ? void 0 : `People have added commits to this branch, so AI Change Guard no longer changes its code. The lists below describe ${base} today.`;
-    await api("PATCH", `/repos/${repo}/pulls/${pr.number}`, { body: owned ? body : evidenceBody(plan, replay, input2.scanPath, note, input2.extra) });
+    await api("PATCH", `/repos/${repo}/pulls/${pr.number}`, { body: owned ? body : evidenceBody(plan, replay, input2.scanPath, note, input2.extra, input2.text) });
     return { action: "updated", number: pr.number, url: pr.html_url };
   };
   try {
@@ -33331,7 +33631,7 @@ ${check2.summary}`);
   if (baselinePath) {
     if (!prompts) throw new Error('A watch needs "prompts" (the golden set the baseline was made from).');
     if (oldModel || newModel || openPr) throw new Error('"baseline" runs a watch of one model; leave out old-model, new-model and open-pr.');
-    const baseline = parseBaseline(await readFile5(resolve(workspace, baselinePath), "utf8"));
+    const baseline = parseBaseline(await readFile6(resolve(workspace, baselinePath), "utf8"));
     const items = await loadGoldenSet(resolve(workspace, prompts));
     const runsInput = input("runs", env);
     const watch = await runWatch({
@@ -33354,6 +33654,78 @@ ${check2.summary}`);
     const t = watch.report.totals;
     log(`${watch.alert ? "::error::" : ""}AI Change Guard watch: ${t.same} same, ${t.changed} changed, ${t.broken} broken${watch.reroutes.length ? `, rerouted to ${watch.reroutes.map((r) => r.served).join(", ")}` : ""}`);
     return failed || watch.alert ? 1 : 0;
+  }
+  if (oneOf(input("slim-prompts", env) || "false", "slim-prompts", ["true", "false"]) === "true") {
+    if (!prompts || !oldModel) throw new Error('slim-prompts needs "prompts" and "old-model" (the model you use now).');
+    if (newModel) throw new Error('slim-prompts keeps your model: remove "new-model", or run the replay in a separate step.');
+    if (input("find-savings", env) === "true") throw new Error("slim-prompts and find-savings each need their own step: run them as two steps.");
+    const writer = input("writer-model", env) || oldModel;
+    const token = input("github-token", env) || env.GITHUB_TOKEN || "";
+    if (openPr && !github && !token) throw new Error('open-pr needs a token: keep the default "github-token" input or pass one.');
+    const callsInput = input("calls-per-month", env);
+    const result = await slimPrompts({
+      items: await loadGoldenSet(resolve(workspace, prompts)),
+      model: oldModel,
+      writer,
+      client: client ?? withRetry(createClient({ env })),
+      runs: positive(input("runs", env) || "3", "runs"),
+      concurrency: positive(input("concurrency", env) || "2", "concurrency"),
+      maxCalls: positive(input("max-calls", env) || "300", "max-calls"),
+      today,
+      ...callsInput ? { callsPerMonth: positive(callsInput, "calls-per-month") } : {}
+    });
+    const card = formatSlimMarkdown(result);
+    await summary(card);
+    const passed = result.prompts.filter((p) => p.best);
+    log(passed.length ? `AI Change Guard prompt slimming: ${passed.length} shorter system prompt(s) passed` : "AI Change Guard prompt slimming: no shorter prompt passed");
+    const byMoney = passed.every((p) => p.best.monthlySaving !== void 0);
+    const worth = (p) => byMoney ? p.best.monthlySaving : p.best.savingShare ?? 0;
+    const top = passed.sort((a, b) => worth(b) - worth(a))[0];
+    if (openPr && top) {
+      const notice = (text) => log(`::notice::AI Change Guard: ${text}`);
+      const edit = top.skippedPrompts.length > 0 ? void 0 : await planPromptEdit(scanRoot, top.system, top.best.prompt);
+      const flat = top.system.replace(/\s+/g, " ").trim();
+      const label = flat.length <= 40 ? flat : `${flat.slice(0, 40).replace(/\s+\S*$/, "")}\u2026`;
+      const short2 = (t) => t.replace(/\s+/g, " ").trim().slice(0, 80);
+      if (!edit) notice(`no pull request, because ${oldModel} did not answer ${top.skippedPrompts.length} prompt(s), so the comparison is incomplete.`);
+      else if (edit.edits.length === 0) {
+        notice(edit.skipped.length ? `no pull request: ${edit.skipped[0].file}:${edit.skipped[0].line}: ${edit.skipped[0].reason}.` : "no pull request, because the system prompt is not written as one string in the code (it may be built at runtime); paste the shorter one from the Summary by hand.");
+      } else {
+        const pr = await openEvidencePr({
+          api: github ?? githubApi(token, env.GITHUB_API_URL),
+          repo: env.GITHUB_REPOSITORY ?? "",
+          ref: env.GITHUB_REF ?? "",
+          sha: env.GITHUB_SHA ?? "",
+          workspace,
+          scanPath: relative2(workspace, scanRoot).split(sep2).join("/"),
+          plan: {
+            from: short2(top.system),
+            to: short2(top.best.prompt),
+            edits: edit.edits.map((e) => ({ ...e, before: short2(top.system), after: short2(top.best.prompt) })),
+            skipped: edit.skipped.map((e) => ({ ...e, raw: short2(top.system) })),
+            files: edit.files
+          },
+          replay: top.best.report,
+          extra: card.replace(/^## .*\n\n/, ""),
+          text: {
+            subject: `Shorten the system prompt "${label}"`,
+            branch: `ai-change-guard/slim-prompt-${createHash4("sha1").update(top.system).digest("hex").slice(0, 10)}`,
+            heading: "A shorter system prompt, tested on your real prompts",
+            replayed: `on \`${oldModel}\` with the current and the shorter system prompt`,
+            beforeMerge: [
+              "- The shorter prompt was written by an AI model and passed your golden set: read it once to check it still says what you mean.",
+              "- Prompts built at runtime, joined from several strings or written with escape sequences are not changed; they are listed above."
+            ]
+          }
+        });
+        if (pr.action === "skipped") notice(`no pull request. ${pr.reason}`);
+        else {
+          log(`AI Change Guard ${pr.action} pull request #${pr.number}: ${pr.url}`);
+          await summary(`**Shorter prompt pull request ${pr.action}:** [#${pr.number}](${pr.url})`);
+        }
+      }
+    }
+    return failed ? 1 : 0;
   }
   if (oneOf(input("find-savings", env) || "false", "find-savings", ["true", "false"]) === "true") {
     if (!prompts || !oldModel) throw new Error('find-savings needs "prompts" and "old-model" (the model you use now).');

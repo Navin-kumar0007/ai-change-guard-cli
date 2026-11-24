@@ -24,3 +24,5 @@ export { describeServer, expandVars, fingerprint, listMcpTools, listServerTools,
 export type { ListOptions, McpServerConfig, McpServerTools, McpToolPrint } from "./mcp-tools.js";
 export { isMcpConfig, parseMcpServers } from "./security.js";
 export { fileKind, isScannablePath } from "./walk.js";
+export { findPrompts, findPromptsInText, planPromptEdit, rewritePromptLiteral } from "./prompts.js";
+export type { FoundPrompt, PromptEditPlan } from "./prompts.js";

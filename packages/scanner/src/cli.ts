@@ -30,6 +30,12 @@ import {
   findSavings,
   formatSavingsMarkdown,
   formatSavingsText,
+  formatSlimMarkdown,
+  formatSlimText,
+  plannedSlimCalls,
+  SLIM_STYLES,
+  slimPrompts,
+  slimTargets,
   platformForRef,
   loadGoldenSet,
   plannedCalls,
@@ -40,7 +46,7 @@ import { buildLock, compareMcp, formatLockChanges, LOCK_FILE, mcpSection, parseL
 import { describeServer, listMcpTools, type McpServerConfig } from "./mcp-tools.js";
 import { describeCost, formatUsd } from "./costs.js";
 import { estimateImpact, logDays, usageFromLog, type ImpactSummary, type ModelUsage } from "./impact.js";
-import { findPrompts } from "./prompts.js";
+import { findPrompts, planPromptEdit } from "./prompts.js";
 import { scanDirectory } from "./scan.js";
 import { applySwitch, planSwitch } from "./switch.js";
 
@@ -59,6 +65,7 @@ const USAGE = `Usage:
   ai-change-guard fallback --set golden.jsonl --model provider:model --candidates a,b,c [--format litellm|openrouter] [--out FILE]
   ai-change-guard lock [folder] [--check] [--mcp]
   ai-change-guard save --set golden.jsonl --model provider:model [--calls-per-month N | --log ai-calls.jsonl] [--candidates a,b]
+  ai-change-guard slim --set golden.jsonl --model provider:model [--writer provider:model] [--calls-per-month N] [--write folder]
   ai-change-guard cost [folder] --log ai-calls.jsonl [--sample 0.2] | --calls N --input-tokens N --output-tokens N [--model ID]
 
 Scan options:
@@ -120,6 +127,18 @@ Save options (Money-Finder: a cheaper model that answers your prompts the same w
   --json | --markdown         Report format (default: text)
   A candidate passes with nothing broken and at most 2% of prompts answered differently.
   Exits with code 1 when no cheaper model passed.
+
+Slim options (Verified Prompt Slimming: a shorter system prompt that answers your prompts the same way):
+  --model provider:model      The model your app uses; both the old and the shorter prompt run on it
+  --writer provider:model     Model that writes the shorter prompts (default: --model)
+  --calls-per-month N         Your volume, for the monthly saving; or --log ai-calls.jsonl [--sample SHARE]
+  --max-prompts N             Slim at most N system prompts, the most-used first (default 3)
+  --runs N                    Runs per prompt (default 3)
+  --write FOLDER              Put each shorter prompt that passed into the code in FOLDER (plain string
+                              literals only; others are listed to change by hand)
+  --json | --markdown         Report format (default: text)
+  Each system prompt in the golden set needs at least 3 prompts. A rewrite passes with nothing broken,
+  at most 2% of prompts answered differently, and a measured saving. Exits with code 1 when none passed.
 
 Cost options (what announced price changes do to your monthly bill):
   --log FILE                  The recorder's ai-calls.jsonl: call volume and tokens per model, scaled to 30 days
@@ -630,13 +649,9 @@ async function saveCommand(args: string[]): Promise<number> {
   const log = str(f, "--log");
   if (log && callsPerMonth !== undefined) throw new UsageError("Use either --log or --calls-per-month, not both.");
   if (log) {
-    const sample = parseSample(str(f, "--sample"));
     // Calls to this model on its own platform, scaled over the days this model appears in the log.
-    const id = model.slice(model.indexOf(":") + 1).replace(/^models\//, "");
-    const platform = platformForRef(model);
-    const mine = usageFromLog(await readFile(resolve(log), "utf8")).filter((u) => u.model === id && (!u.platform || !platform || u.platform === platform));
-    if (mine.length === 0) console.error(`${log} has no calls to ${model}; the monthly saving is left out.`);
-    else callsPerMonth = Math.round((mine.reduce((n, u) => n + u.calls, 0) / sample) * (30 / (logDays(mine) ?? 30)));
+    callsPerMonth = await callsFromLog(log, model, parseSample(str(f, "--sample")));
+    if (callsPerMonth === undefined) console.error(`${log} has no calls to ${model}; the monthly saving is left out.`);
   }
 
   const runs = int(f, "--runs", 3);
@@ -656,6 +671,84 @@ async function saveCommand(args: string[]): Promise<number> {
   console.log(f["--json"] ? JSON.stringify(result, null, 2) : f["--markdown"] ? formatSavingsMarkdown(result) : formatSavingsText(result, { volumeHint: !log }));
   // Like fallback: 0 when a cheaper model passed, 1 when none did.
   return result.best ? 0 : 1;
+}
+
+/** Monthly calls to `model` in a recorder log, scaled over the days it appears; undefined when it has none. */
+async function callsFromLog(log: string, model: string, sample: number): Promise<number | undefined> {
+  const id = model.slice(model.indexOf(":") + 1).replace(/^models\//, "");
+  const platform = platformForRef(model);
+  const mine = usageFromLog(await readFile(resolve(log), "utf8")).filter((u) => u.model === id && (!u.platform || !platform || u.platform === platform));
+  if (mine.length === 0) return undefined;
+  return Math.round((mine.reduce((n, u) => n + u.calls, 0) / sample) * (30 / (logDays(mine) ?? 30)));
+}
+
+async function slimCommand(args: string[]): Promise<number> {
+  const f = parseFlags(args, {
+    "--model": "value",
+    "--writer": "value",
+    "--calls-per-month": "int",
+    "--log": "value",
+    "--sample": "value",
+    "--max-prompts": "int",
+    "--write": "value",
+    "--today": "value",
+    "--json": "bool",
+    "--markdown": "bool",
+  });
+  const set = str(f, "--set");
+  const model = str(f, "--model");
+  if (!set || !model) throw new UsageError("slim needs --set and --model.");
+  modelRefOrUsage(model, "--model");
+  const writer = str(f, "--writer") ?? model;
+  modelRefOrUsage(writer, "--writer");
+  const today = str(f, "--today") ?? localToday();
+  if (!DATE_RE.test(today)) throw new UsageError("--today must look like 2026-11-17");
+  let callsPerMonth = f["--calls-per-month"] as number | undefined;
+  const log = str(f, "--log");
+  if (log && callsPerMonth !== undefined) throw new UsageError("Use either --log or --calls-per-month, not both.");
+  if (log) {
+    callsPerMonth = await callsFromLog(log, model, parseSample(str(f, "--sample")));
+    if (callsPerMonth === undefined) console.error(`${log} has no calls to ${model}; the monthly saving is left out.`);
+  }
+  const write = str(f, "--write");
+  // A missing or unreadable folder fails here, before any paid call.
+  if (write && !(await stat(resolve(write)).catch(() => undefined))?.isDirectory()) throw new UsageError(`--write: ${write} is not a folder.`);
+
+  const runs = int(f, "--runs", 3);
+  const maxPrompts = int(f, "--max-prompts", 3);
+  const items = await loadGoldenSet(resolve(set));
+  const testable = slimTargets(items, maxPrompts);
+  console.error(`Up to ${plannedSlimCalls(testable, runs, SLIM_STYLES.length)} calls on your API key (${testable.length} system prompt${testable.length === 1 ? "" : "s"} on ${model}, rewrites by ${writer}).`);
+  const result = await slimPrompts({
+    items,
+    model,
+    writer,
+    client: withRetry(createClient()),
+    runs,
+    maxPrompts,
+    today,
+    maxCalls: int(f, "--max-calls", 500),
+    concurrency: int(f, "--concurrency", 2),
+    ...(callsPerMonth !== undefined ? { callsPerMonth } : {}),
+  });
+  console.log(f["--json"] ? JSON.stringify(result, null, 2) : f["--markdown"] ? formatSlimMarkdown(result) : formatSlimText(result));
+
+  if (write) {
+    const root = resolve(write);
+    for (const p of result.prompts) {
+      if (!p.best) continue;
+      if (p.skippedPrompts.length > 0) {
+        console.error(`Not written: ${model} did not answer ${p.skippedPrompts.length} of its prompts, so the shorter prompt was not compared on them.`);
+        continue;
+      }
+      const plan = await planPromptEdit(root, p.system, p.best.prompt);
+      await applySwitch(root, { from: "", to: "", edits: [], skipped: [], files: plan.files });
+      for (const e of plan.edits) console.error(`Wrote the shorter prompt to ${e.file}:${e.line}`);
+      for (const s of plan.skipped) console.error(`Not changed: ${s.file}:${s.line}: ${s.reason}`);
+      if (plan.edits.length === 0 && plan.skipped.length === 0) console.error(`The prompt starting "${p.system.slice(0, 50).replace(/\s+/g, " ")}" is not written as one string in ${write} (it may be built at runtime); paste the new one by hand.`);
+    }
+  }
+  return result.prompts.some((p) => p.best) ? 0 : 1;
 }
 
 /** The recorder's sample setting: a share above 0 and at most 1 (default 1). */
@@ -770,6 +863,7 @@ async function main(argv: string[]): Promise<number> {
   if (command === "fallback") return fallbackCommand(rest);
   if (command === "cost") return costCommand(rest);
   if (command === "save") return saveCommand(rest);
+  if (command === "slim") return slimCommand(rest);
   if (command === "lock") return lockCommand(rest);
   if (command !== "scan") throw new UsageError(command ? `Unknown command: ${command}` : "Missing command.");
 

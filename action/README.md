@@ -82,6 +82,22 @@ The step fails, so GitHub emails you, only when something changed: at least 3 of
 
 Add `repair: true` to a replay. When the new model breaks a prompt's JSON format, the Action tries a JSON-only instruction in the system prompt, then that plus the provider's JSON mode, re-tests each on the new model, and shows the change that works in the Summary. The step still fails until you apply the fix to your prompt; repair calls count against `max-calls`.
 
+## Verified Prompt Slimming: a shorter system prompt, with proof
+
+```yaml
+      - uses: Navin-kumar0007/ai-change-guard-cli@v1
+        with:
+          prompts: golden.jsonl
+          old-model: openai:gpt-5.5
+          slim-prompts: true
+          calls-per-month: 100000
+          open-pr: true
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+```
+
+A model rewrites each system prompt in the golden set shorter; your prompts are replayed on `old-model` with the old and the new prompt. A rewrite passes only with nothing broken, at most 2% of answers changed and a measured saving. With `open-pr: true` (on the default branch, with `contents: write` and `pull-requests: write`), the Action opens one pull request that puts the passing prompt that saves the most into the code, with the slimming card and the replay report. Only prompts written as one plain string are changed.
+
 ## Open a pull request that switches the model (evidence PR)
 
 Add `open-pr: true` to a replay. When every prompt passes (nothing broken, no errors), the Action commits the new model ID to a branch named `ai-change-guard/<old>-to-<new>` and opens a pull request whose description is the replay report: the proof that the switch is safe on your real prompts.
@@ -131,8 +147,10 @@ How it behaves:
 | `path` | `.` | Folder to scan |
 | `fail-on` | `retired` | Fail when a model or API is `retired`, `retiring` (within 90 days), or `none`. A malicious AI package release in a lockfile fails unless `none` |
 | `find-savings` | `false` | `true` runs Money-Finder on `old-model`: replays `prompts` on cheaper models of the same provider and writes the savings card to the Summary. With `open-pr: true`, opens the switch pull request to the cheaper model that passed |
+| `slim-prompts` | `false` | `true` runs Verified Prompt Slimming on `old-model`: a model rewrites each system prompt in `prompts` shorter, both versions are replayed, and the slimming card goes to the Summary. A rewrite passes only with nothing broken, at most 2% changed and a measured saving. With `open-pr: true`, opens a pull request that puts the shorter prompt (the one that saves most) into the code |
+| `writer-model` | | `provider:model` that writes the shorter prompts for `slim-prompts` (default: `old-model`) |
 | `candidates` | | Models for `find-savings`, comma-separated `provider:model` (default: the 2 nearest cheaper ones in the catalog) |
-| `calls-per-month` | | Your monthly calls to `old-model`, for the monthly saving in the savings card |
+| `calls-per-month` | | Your monthly calls to `old-model`, for the monthly saving in the savings or slimming card |
 | `mcp-tools` | `false` | `true` starts the MCP servers in the repository's MCP config on this runner and compares their tools with `ai-stack.lock` (needs a lock written with `lock --mcp`). Runs the commands in that config |
 | `mcp-env` | | Environment variables `mcp-tools` may fill into the MCP config's `${VAR}` placeholders, comma-separated. Others stay empty, so a config changed in a pull request can't send runner tokens elsewhere |
 | `lock-fail-on` | `none` | With an `ai-stack.lock` in the repository: fail when it differs from the code or the catalog (`any`), only from the code (`outdated`), only from the catalog (`catalog`), only a model switched without a new baseline (`unverified`), only MCP tools changed (`mcp`) |

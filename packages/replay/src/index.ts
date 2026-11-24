@@ -25,3 +25,5 @@ export { cleanCandidates, litellmConfig, openrouterConfig, plannedFallbackCalls,
 export type { CandidateResult, FallbackOptions, FallbackResult } from "./fallback.js";
 export { candidateProblem, cheaperCandidates, findSavings, formatSavingsMarkdown, formatSavingsText, MAX_CHANGED_SHARE, steadyCost } from "./savings.js";
 export type { Candidate, SavingsCandidate, SavingsOptions, SavingsResult } from "./savings.js";
+export { formatSlimMarkdown, formatSlimText, MIN_SLIM_ITEMS, parseSlimAnswer, placeholders, plannedSlimCalls, rewriteProblem, SLIM_STYLES, slimPrompts, slimRequest, slimTargets } from "./slim.js";
+export type { SlimOptions, SlimPrompt, SlimResult, SlimStyle, SlimVariant } from "./slim.js";

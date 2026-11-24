@@ -148,3 +148,31 @@ describe("watch mode", () => {
     await expect(runAction({}, { prompts: "g.jsonl", baseline: "b.json", "old-model": "openai:a" })).rejects.toThrow(/watch of one model/);
   });
 });
+
+describe("prompt slimming in the Action", () => {
+  const SYSTEM = "You are the order assistant for Acme Store. Please always read the message very carefully. Reply with JSON only, keys item and qty, and never add extra text.";
+  const SET = [1, 2, 3].map((n) => JSON.stringify({ id: `o${n}`, system: SYSTEM, input: `I want ${n} apples`, expect: { json: true } })).join("\n");
+  const SHORT = "Reply JSON only: keys item, qty. No extra text.";
+  const client: LlmClient = async (req) => ({
+    text: req.system?.startsWith("You shorten") ? JSON.stringify({ prompt: SHORT }) : `{"item": "apple", "qty": ${/\d+/.exec(req.messages[0]!.content)![0]}}`,
+    toolCalls: [],
+    inputTokens: 20 + Math.round((req.system ?? "").length / 4),
+    outputTokens: 10,
+    latencyMs: 1,
+    refused: false,
+  });
+
+  it("puts the slimming card in the Summary", async () => {
+    const { code, summary, lines } = await runAction({ "golden.jsonl": SET }, { prompts: "golden.jsonl", "old-model": "openai:gpt-5.5", "slim-prompts": "true", "fail-on": "none", runs: "1" }, client);
+    expect(code).toBe(0);
+    expect(summary).toContain("## Prompt slimming: `openai:gpt-5.5`");
+    expect(summary).toContain(SHORT);
+    expect(lines).toContain("AI Change Guard prompt slimming: 1 shorter system prompt(s) passed");
+  });
+
+  it("needs prompts and old-model, and keeps the model", async () => {
+    await expect(runAction({}, { "slim-prompts": "true", "old-model": "openai:gpt-5.5" })).rejects.toThrow(/slim-prompts needs/);
+    await expect(runAction({ "golden.jsonl": SET }, { "slim-prompts": "true", prompts: "golden.jsonl", "old-model": "openai:a", "new-model": "openai:b" })).rejects.toThrow(/keeps your model/);
+    await expect(runAction({ "golden.jsonl": SET }, { "slim-prompts": "true", "find-savings": "true", prompts: "golden.jsonl", "old-model": "openai:a" })).rejects.toThrow(/own step/);
+  });
+});
