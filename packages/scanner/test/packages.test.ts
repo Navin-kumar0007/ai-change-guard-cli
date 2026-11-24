@@ -297,3 +297,25 @@ describe("website review fixes", () => {
     expect(refreshReport(first, "2026-12-20").packages).toEqual([]);
   });
 });
+
+describe("isScannablePath", () => {
+  it("matches the walker: code, config and lockfiles, never dependency or build folders", async () => {
+    const { isScannablePath } = await import("../src/walk.js");
+    for (const p of ["app.py", "src/bot.ts", "backend/requirements.txt", "package-lock.json", "uv.lock", ".npmrc", "ai-stack.lock", ".mcp.json", ".env.example", "config/settings.yaml"]) expect(isScannablePath(p), p).toBe(true);
+    for (const p of ["backend/venv/lib/python3.11/site-packages/x.py", "node_modules/openai/index.js", "dist/app.js", "logo.png", "Cargo.lock", "app.min.js", "README.md", "backend/git_alpha.db"]) expect(isScannablePath(p), p).toBe(false);
+  });
+
+  it("agrees with walk() on a real folder", async () => {
+    const { isScannablePath, walk } = await import("../src/walk.js");
+    const dir = await mkdtemp(join(tmpdir(), "acg-walk-"));
+    const { mkdir } = await import("node:fs/promises");
+    for (const f of ["a.py", "venv/lib/b.py", "web/package.json", "web/node_modules/x/index.js", "notes.md", "uv.lock"]) {
+      await mkdir(join(dir, f, ".."), { recursive: true });
+      await writeFile(join(dir, f), "x");
+    }
+    const walked: string[] = [];
+    for await (const f of walk(dir)) walked.push(f.rel);
+    expect(walked.sort()).toEqual(["a.py", "uv.lock", "web/package.json"]);
+    expect(["a.py", "venv/lib/b.py", "web/package.json", "web/node_modules/x/index.js", "notes.md", "uv.lock"].filter(isScannablePath).sort()).toEqual(walked.sort());
+  });
+});

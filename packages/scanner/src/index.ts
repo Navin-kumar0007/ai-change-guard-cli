@@ -23,3 +23,4 @@ export type { AiStackLock, LockChange, LockChangeKind, LockedApi, LockedBaseline
 export { describeServer, expandVars, fingerprint, listMcpTools, listServerTools, toolPrints } from "./mcp-tools.js";
 export type { ListOptions, McpServerConfig, McpServerTools, McpToolPrint } from "./mcp-tools.js";
 export { isMcpConfig, parseMcpServers } from "./security.js";
+export { fileKind, isScannablePath } from "./walk.js";

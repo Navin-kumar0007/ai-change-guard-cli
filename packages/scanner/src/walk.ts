@@ -65,6 +65,21 @@ export function fileKind(name: string): FileKind | null {
   return null;
 }
 
+/** Repository files the scanner reads besides code and config: dependency files and its own inputs. */
+const EXTRA_FILES = new Set([".npmrc", "ai-stack.lock"]);
+
+/**
+ * Whether the scanner would read this repository path (slash-separated, relative to the root): the same rule
+ * as walk(), so a hosted scan can download only these files instead of the whole repository.
+ */
+export function isScannablePath(path: string): boolean {
+  const parts = path.split("/").filter(Boolean);
+  const name = parts.pop();
+  if (!name || parts.some((dir) => SKIP_DIRS.has(dir))) return false;
+  if (isLockfile(name) || EXTRA_FILES.has(name)) return true;
+  return !SKIP_FILES.has(name) && fileKind(name) !== null;
+}
+
 export interface WalkedFile {
   path: string;
   rel: string;
