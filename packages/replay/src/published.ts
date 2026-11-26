@@ -2,6 +2,8 @@
 // the migration report straight from the customer's repository. The data stays in their GitHub: the dashboard
 // reads it when someone opens the page and stores nothing.
 import type { ReplayReport, Reroute } from "./report.js";
+import type { SavingsResult } from "./savings.js";
+import type { WatchReport } from "./watch.js";
 import type { Verdict } from "./verdict.js";
 
 /** The check run's name: the dashboard looks for exactly this. */
@@ -56,6 +58,23 @@ function item(i: ReplayReport["items"][number], sample: number, sameSamples: boo
 /** JSON that can sit inside an HTML comment: "<", ">" and "&" never appear literally, so "-->" can't end it early. */
 const safeJson = (value: unknown) => JSON.stringify(value).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026");
 
+/** A payload as a check run's text: a comment GitHub doesn't show, marked with what it holds. */
+const wrapData = (mark: string, value: unknown) => `<!-- ${mark} ${safeJson(value)} -->`;
+
+/** The JSON after `mark` in a check run's text, or undefined when there is none or it doesn't parse. */
+function unwrap(text: string | null | undefined, mark: string): unknown {
+  if (!text) return undefined;
+  const at = text.indexOf(`<!-- ${mark} `);
+  if (at < 0) return undefined;
+  const end = text.indexOf(" -->", at);
+  if (end < 0) return undefined;
+  try {
+    return JSON.parse(text.slice(at + mark.length + 6, end));
+  } catch {
+    return undefined;
+  }
+}
+
 /** The check run's text: the report as data, in a comment GitHub doesn't show. */
 export function replayCheckText(report: ReplayReport, prUrl?: string, limit = TEXT_LIMIT): string {
   const base: Omit<PublishedReplay, "items" | "omittedItems"> = {
@@ -74,7 +93,7 @@ export function replayCheckText(report: ReplayReport, prUrl?: string, limit = TE
     reroutes: report.reroutes.slice(0, 10).map((r) => ({ side: r.side, requested: r.requested.slice(0, 200), served: r.served.slice(0, 200) })),
     ...(prUrl ? { prUrl: prUrl.slice(0, 500) } : {}),
   };
-  const wrap = (items: PublishedItem[], omitted: number) => `<!-- ${MARK} ${safeJson({ ...base, items, omittedItems: omitted })} -->`;
+  const wrap = (items: PublishedItem[], omitted: number) => wrapData(MARK, { ...base, items, omittedItems: omitted });
   // Shrink step by step: shorter answers, then no answers for unchanged prompts, then fewer prompts.
   for (const [sample, sameSamples] of [[2000, true], [2000, false], [800, false], [300, false]] as const) {
     const text = wrap(report.items.map((i) => item(i, sample, sameSamples)), 0);
@@ -98,17 +117,8 @@ const usage = (v: unknown) => ({ input: num(record(v).input), output: num(record
  * write checks in the repository can write this text, so every field is checked and rebuilt, never passed through.
  */
 export function readReplayCheckText(text: string | null | undefined): PublishedReplay | null {
-  if (!text) return null;
-  const at = text.indexOf(`<!-- ${MARK} `);
-  if (at < 0) return null;
-  const end = text.indexOf(" -->", at);
-  if (end < 0) return null;
-  let data: unknown;
-  try {
-    data = JSON.parse(text.slice(at + MARK.length + 6, end));
-  } catch {
-    return null;
-  }
+  const data = unwrap(text, MARK);
+  if (data === undefined) return null;
   const d = record(data);
   const totals = record(d.totals);
   const oldModel = str(d.oldModel, 200);
@@ -179,3 +189,125 @@ export function replayTitle(report: Pick<ReplayReport, "totals">): string {
   if (t.error) parts.push(`${t.error} could not compare`);
   return parts.join(" · ");
 }
+
+/** The nightly watch's check run (its baseline replayed on the model in use): the dashboard's "last night's result". */
+export const WATCH_CHECK_NAME = "AI Change Guard nightly watch";
+const WATCH_MARK = "ai-change-guard:watch:v1";
+
+export interface PublishedWatch {
+  v: 1;
+  model: string;
+  baselineCreatedAt: string;
+  totals: Record<Verdict, number>;
+  alert: boolean;
+  snapshotChanged: boolean;
+  reroutes: { requested: string; served: string }[];
+  servedNow: string[];
+}
+
+export function watchCheckText(w: WatchReport): string {
+  return wrapData(WATCH_MARK, {
+    v: 1,
+    model: w.model.slice(0, 200),
+    baselineCreatedAt: w.baselineCreatedAt.slice(0, 40),
+    totals: w.report.totals,
+    alert: w.alert,
+    snapshotChanged: w.snapshotChanged,
+    reroutes: w.reroutes.slice(0, 10).map((r) => ({ requested: r.requested.slice(0, 200), served: r.served.slice(0, 200) })),
+    servedNow: w.servedNow.slice(0, 10).map((m) => m.slice(0, 200)),
+  } satisfies PublishedWatch);
+}
+
+export function readWatchCheckText(text: string | null | undefined): PublishedWatch | null {
+  const d = record(unwrap(text, WATCH_MARK));
+  const totals = record(d.totals);
+  const model = str(d.model, 200);
+  if (d.v !== 1 || !model || !["same", "changed", "broken", "error"].every((k) => typeof totals[k] === "number")) return null;
+  return {
+    v: 1,
+    model,
+    baselineCreatedAt: str(d.baselineCreatedAt, 40) ?? "",
+    totals: { same: num(totals.same), changed: num(totals.changed), broken: num(totals.broken), error: num(totals.error) },
+    alert: d.alert === true,
+    snapshotChanged: d.snapshotChanged === true,
+    reroutes: (Array.isArray(d.reroutes) ? d.reroutes : []).slice(0, 10).flatMap((r) => {
+      const x = record(r);
+      const requested = str(x.requested, 200);
+      const served = str(x.served, 200);
+      return requested && served ? [{ requested, served }] : [];
+    }),
+    servedNow: (Array.isArray(d.servedNow) ? d.servedNow : []).flatMap((m) => (typeof m === "string" ? [m.slice(0, 200)] : [])).slice(0, 10),
+  };
+}
+
+/** Money-Finder's check run (cheaper models tested on the golden set): the dashboard's savings card. */
+export const SAVINGS_CHECK_NAME = "AI Change Guard Money-Finder";
+const SAVINGS_MARK = "ai-change-guard:savings:v1";
+
+export interface SavingsLine {
+  model: string;
+  qualifies: boolean;
+  reason?: string;
+  /** Share of the per-call cost saved (0.7 = 70% cheaper). */
+  savingShare?: number;
+  /** Dollars a month saved at the call volume given. */
+  monthlySaving?: number;
+}
+
+export interface PublishedSavings {
+  v: 1;
+  primary: string;
+  callsPerMonth?: number;
+  best?: SavingsLine;
+  candidates: SavingsLine[];
+}
+
+const line = (c: SavingsResult["candidates"][number]): SavingsLine => ({
+  model: c.model.slice(0, 200),
+  qualifies: c.qualifies,
+  ...(c.reason ? { reason: c.reason.slice(0, 300) } : {}),
+  ...(c.savingShare !== undefined ? { savingShare: c.savingShare } : {}),
+  ...(c.monthlySaving !== undefined ? { monthlySaving: c.monthlySaving } : {}),
+});
+
+export function savingsCheckText(r: SavingsResult): string {
+  return wrapData(SAVINGS_MARK, {
+    v: 1,
+    primary: r.primary.slice(0, 200),
+    ...(r.callsPerMonth !== undefined ? { callsPerMonth: r.callsPerMonth } : {}),
+    ...(r.best ? { best: line(r.best) } : {}),
+    candidates: r.candidates.slice(0, 10).map(line),
+  } satisfies PublishedSavings);
+}
+
+function readLine(v: unknown): SavingsLine | null {
+  const x = record(v);
+  const model = str(x.model, 200);
+  if (!model) return null;
+  const reason = str(x.reason, 300);
+  return {
+    model,
+    qualifies: x.qualifies === true,
+    ...(reason ? { reason } : {}),
+    ...(typeof x.savingShare === "number" && Number.isFinite(x.savingShare) ? { savingShare: x.savingShare } : {}),
+    ...(typeof x.monthlySaving === "number" && Number.isFinite(x.monthlySaving) ? { monthlySaving: x.monthlySaving } : {}),
+  };
+}
+
+export function readSavingsCheckText(text: string | null | undefined): PublishedSavings | null {
+  const d = record(unwrap(text, SAVINGS_MARK));
+  const primary = str(d.primary, 200);
+  if (d.v !== 1 || !primary || !Array.isArray(d.candidates)) return null;
+  const best = d.best === undefined ? null : readLine(d.best);
+  return {
+    v: 1,
+    primary,
+    ...(typeof d.callsPerMonth === "number" && Number.isFinite(d.callsPerMonth) ? { callsPerMonth: d.callsPerMonth } : {}),
+    ...(best ? { best } : {}),
+    candidates: d.candidates.slice(0, 10).flatMap((c) => {
+      const l = readLine(c);
+      return l ? [l] : [];
+    }),
+  };
+}
+

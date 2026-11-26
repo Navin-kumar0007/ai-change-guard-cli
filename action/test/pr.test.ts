@@ -119,7 +119,7 @@ async function runWithPr(
   const lines: string[] = [];
   const code = await run({ env, today: "2026-11-22", log: (l) => lines.push(l), client, github });
   // The check run's own line is tested on its own below; the pull request tests read the lines before it.
-  const checkLine = (l: string) => /model switch report as a check run/.test(l);
+  const checkLine = (l: string) => /as a check run/.test(l);
   return { code, lines: lines.filter((l) => !checkLine(l)), checkLines: lines.filter(checkLine), summary: await readFile(env.GITHUB_STEP_SUMMARY!, "utf8"), dir };
 }
 
@@ -379,6 +379,16 @@ describe("the model switch report on the dashboard", () => {
     await expect(runWithPr(api)).rejects.toThrow(/Allow GitHub Actions to create and approve pull requests/);
     expect(checks).toHaveLength(1);
     expect((checks[0]!.body as { output: { text: string } }).output.text).not.toContain("prUrl");
+  });
+
+  it("saves Money-Finder's result as its own check run, before trying the pull request", async () => {
+    const { readSavingsCheckText, SAVINGS_CHECK_NAME } = await import("@ai-changeguard/replay");
+    const { api, checks } = fakeGitHub({ denyPulls: true });
+    await expect(runWithPr(api, { inputs: { "find-savings": "true", "new-model": "", candidates: "openai:gpt-6-luna" } })).rejects.toThrow();
+    expect(checks).toHaveLength(1);
+    const body = checks[0]!.body as { name: string; conclusion: string; output: { title: string; text: string } };
+    expect(body).toMatchObject({ name: SAVINGS_CHECK_NAME, conclusion: "success", output: { title: "openai:gpt-6-luna passes, 95% cheaper per call" } });
+    expect(readSavingsCheckText(body.output.text)).toMatchObject({ primary: "openai:gpt-4o", best: { model: "openai:gpt-6-luna", qualifies: true } });
   });
 
   it("says how to turn it on when the workflow may not write checks, and the job still passes", async () => {

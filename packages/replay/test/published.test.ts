@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readReplayCheckText, replayCheckText, replayConclusion, replayTitle, type ReplayReport } from "../src/index.js";
+import { readReplayCheckText, readSavingsCheckText, readWatchCheckText, replayCheckText, replayConclusion, replayTitle, savingsCheckText, watchCheckText, type ReplayReport } from "../src/index.js";
 
 const side = { runs: 3, errors: 0, avgInputTokens: 100, avgOutputTokens: 50, avgLatencyMs: 800, avgChars: 200, servedModels: [] };
 function report(items: ReplayReport["items"]): ReplayReport {
@@ -111,5 +111,36 @@ describe("the replay report published in a check run", () => {
     expect(replayConclusion({ totals: { same: 5, changed: 0, broken: 0, error: 1 } })).toBe("neutral");
     expect(replayConclusion({ totals: { same: 5, changed: 0, broken: 0, error: 0 } })).toBe("success");
     expect(replayTitle({ totals: { same: 45, changed: 3, broken: 2, error: 1 } })).toBe("45 same · 3 changed · 2 broken · 1 could not compare");
+  });
+
+  it("publishes and reads back the nightly watch and Money-Finder results, rebuilding what it reads", () => {
+    const r = report([item("a", "changed"), item("b", "same")]);
+    const watch = readWatchCheckText(
+      `x ${watchCheckText({ model: "openai:gpt-4o", baselineCreatedAt: "2026-11-20T00:00:00.000Z", report: r, reroutes: [{ requested: "gpt-4o", served: "gpt-6-luna" }], servedBefore: [], servedNow: ["gpt-6-luna-2026-09-22"], snapshotChanged: true, notInBaseline: [], alert: true })}`,
+    );
+    expect(watch).toEqual({
+      v: 1,
+      model: "openai:gpt-4o",
+      baselineCreatedAt: "2026-11-20T00:00:00.000Z",
+      totals: { same: 1, changed: 1, broken: 0, error: 0 },
+      alert: true,
+      snapshotChanged: true,
+      reroutes: [{ requested: "gpt-4o", served: "gpt-6-luna" }],
+      servedNow: ["gpt-6-luna-2026-09-22"],
+    });
+    const cand = { model: "openai:gpt-6-luna", qualifies: true, report: r, changedShare: 0, savingShare: 0.95, monthlySaving: 120 };
+    const savings = readSavingsCheckText(savingsCheckText({ primary: "openai:gpt-4o", runs: 3, calls: 12, callsPerMonth: 10_000, candidates: [cand], excluded: [], skippedPrompts: [], best: cand }));
+    expect(savings).toEqual({
+      v: 1,
+      primary: "openai:gpt-4o",
+      callsPerMonth: 10_000,
+      best: { model: "openai:gpt-6-luna", qualifies: true, savingShare: 0.95, monthlySaving: 120 },
+      candidates: [{ model: "openai:gpt-6-luna", qualifies: true, savingShare: 0.95, monthlySaving: 120 }],
+    });
+    // Tampered text: wrong types are dropped, never passed through; no model means unreadable.
+    const tampered = `<!-- ai-change-guard:savings:v1 ${JSON.stringify({ v: 1, primary: "p", candidates: [{ model: "m", savingShare: "lots", qualifies: "yes" }, { nope: 1 }] })} -->`;
+    expect(readSavingsCheckText(tampered)).toEqual({ v: 1, primary: "p", candidates: [{ model: "m", qualifies: false }] });
+    expect(readWatchCheckText('<!-- ai-change-guard:watch:v1 {"v":1,"totals":{"same":1}} -->')).toBeNull();
+    expect(readSavingsCheckText(replayCheckText(r))).toBeNull();
   });
 });

@@ -19,6 +19,10 @@ import {
   replayCheckText,
   replayConclusion,
   replayTitle,
+  SAVINGS_CHECK_NAME,
+  savingsCheckText,
+  WATCH_CHECK_NAME,
+  watchCheckText,
   runReplayJob,
   runWatch,
   slackMessage,
@@ -92,16 +96,17 @@ export function switchIds(oldModel: string, newModel: string): { from: string; t
 }
 
 /**
- * Publishes the replay report as a check run on the commit, which is where the AI Change Guard dashboard reads
- * its migration report. Never fails the job: without "checks: write" it says how to turn it on.
+ * Saves a report as a check run on the commit, which is where the AI Change Guard dashboard reads it (the
+ * migration report, last night's watch, Money-Finder). Never fails the job: without "checks: write" it says how
+ * to turn it on.
  */
-async function publishReplayCheck({ env, log, github, replay, prUrl, failOn }: {
+async function publishCheck({ env, log, github, what, output }: {
   env: RunDeps["env"];
   log: RunDeps["log"];
   github: GitHubApi | undefined;
-  replay: Parameters<typeof replayCheckText>[0];
-  prUrl: string | undefined;
-  failOn: "broken" | "changed" | "none";
+  /** "model switch report", "nightly watch", "Money-Finder result": for the log lines. */
+  what: string;
+  output: { name: string; conclusion: "success" | "neutral" | "failure"; title: string; summary: string; text: string };
 }): Promise<void> {
   const repo = env.GITHUB_REPOSITORY ?? "";
   const sha = env.GITHUB_SHA ?? "";
@@ -109,13 +114,13 @@ async function publishReplayCheck({ env, log, github, replay, prUrl, failOn }: {
   if (!repo || !sha || (!github && !token)) return;
   try {
     await (github ?? githubApi(token, env.GITHUB_API_URL))("POST", `/repos/${repo}/check-runs`, {
-      name: REPLAY_CHECK_NAME,
+      name: output.name,
       head_sha: sha,
       status: "completed",
-      conclusion: replayConclusion(replay, failOn),
-      output: { title: replayTitle(replay), summary: formatReplayMarkdown(replay).slice(0, 60_000), text: replayCheckText(replay, prUrl) },
+      conclusion: output.conclusion,
+      output: { title: output.title, summary: output.summary.slice(0, 60_000), text: output.text },
     });
-    log("AI Change Guard: saved the model switch report as a check run; it shows on your AI Change Guard dashboard");
+    log(`AI Change Guard: saved the ${what} as a check run; it shows on your AI Change Guard dashboard`);
   } catch (error) {
     const hint =
       error instanceof GitHubError && error.status === 403
@@ -123,7 +128,7 @@ async function publishReplayCheck({ env, log, github, replay, prUrl, failOn }: {
         : error instanceof Error
           ? error.message
           : String(error);
-    log(`::notice::AI Change Guard: could not save the model switch report as a check run (${hint}).`);
+    log(`::notice::AI Change Guard: could not save the ${what} as a check run (${hint}).`);
   }
 }
 
@@ -196,6 +201,19 @@ export async function run({ env, today, log, client, github }: RunDeps): Promise
       );
     }
     const t = watch.report.totals;
+    await publishCheck({
+      env,
+      log,
+      github,
+      what: "nightly watch",
+      output: {
+        name: WATCH_CHECK_NAME,
+        conclusion: watch.alert ? "failure" : "success",
+        title: `${t.same} same · ${t.changed} changed · ${t.broken} broken${watch.reroutes.length ? " · rerouted" : ""}`,
+        summary: formatWatchMarkdown(watch),
+        text: watchCheckText(watch),
+      },
+    });
     log(`${watch.alert ? "::error::" : ""}AI Change Guard watch: ${t.same} same, ${t.changed} changed, ${t.broken} broken${watch.reroutes.length ? `, rerouted to ${watch.reroutes.map((r) => r.served).join(", ")}` : ""}`);
     return failed || watch.alert ? 1 : 0;
   }
@@ -306,6 +324,20 @@ export async function run({ env, today, log, client, github }: RunDeps): Promise
     });
     const card = formatSavingsMarkdown(result);
     await summary(card);
+    // Saved before any pull request is tried, so a refused pull request can't lose the result.
+    await publishCheck({
+      env,
+      log,
+      github,
+      what: "Money-Finder result",
+      output: {
+        name: SAVINGS_CHECK_NAME,
+        conclusion: result.best ? "success" : "neutral",
+        title: result.best ? `${result.best.model} passes, ${Math.round((result.best.savingShare ?? 0) * 100)}% cheaper per call` : "No cheaper model passed",
+        summary: card,
+        text: savingsCheckText(result),
+      },
+    });
     log(result.best ? `AI Change Guard Money-Finder: ${result.best.model} passes and is ${Math.round((result.best.savingShare ?? 0) * 100)}% cheaper per call` : "AI Change Guard Money-Finder: no cheaper model passed");
     if (openPr && result.best) {
       const plan = plans.get(result.best.model)!;
@@ -397,7 +429,19 @@ export async function run({ env, today, log, client, github }: RunDeps): Promise
         }
       }
     } finally {
-      await publishReplayCheck({ env, log, github, replay, prUrl, failOn: replayFailOn as "broken" | "changed" | "none" });
+      await publishCheck({
+        env,
+        log,
+        github,
+        what: "model switch report",
+        output: {
+          name: REPLAY_CHECK_NAME,
+          conclusion: replayConclusion(replay, replayFailOn as "broken" | "changed" | "none"),
+          title: replayTitle(replay),
+          summary: formatReplayMarkdown(replay),
+          text: replayCheckText(replay, prUrl),
+        },
+      });
     }
   }
   return failed ? 1 : 0;

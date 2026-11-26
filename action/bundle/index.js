@@ -1800,8 +1800,8 @@ var init_doc = __esm({
         const lines = content.split("\n").filter((x) => x);
         const minIndent = Math.min(...lines.map((x) => x.length - x.trimStart().length));
         const dedented = lines.map((x) => x.slice(minIndent)).map((x) => " ".repeat(this.indent * 2) + x);
-        for (const line of dedented) {
-          this.content.push(line);
+        for (const line2 of dedented) {
+          this.content.push(line2);
         }
       }
       compile() {
@@ -10959,8 +10959,8 @@ function getDisplayName(metadata) {
   if ("annotations" in metadata && metadata.annotations?.title) return metadata.annotations.title;
   return metadata.name;
 }
-function deserializeMessage(line) {
-  return JSONRPCMessageSchema.parse(JSON.parse(line));
+function deserializeMessage(line2) {
+  return JSONRPCMessageSchema.parse(JSON.parse(line2));
 }
 function serializeMessage(message2) {
   return JSON.stringify(message2) + "\n";
@@ -13000,10 +13000,10 @@ var init_src_CeKsbNLO = __esm({
         while (this._buffer) {
           const index = this._buffer.indexOf("\n");
           if (index === -1) return null;
-          const line = this._buffer.toString("utf8", 0, index).replace(/\r$/, "");
+          const line2 = this._buffer.toString("utf8", 0, index).replace(/\r$/, "");
           this._buffer = this._buffer.subarray(index + 1);
           try {
-            return deserializeMessage(line);
+            return deserializeMessage(line2);
           } catch (error2) {
             if (error2 instanceof SyntaxError) continue;
             throw error2;
@@ -13484,7 +13484,7 @@ var init_ajvProvider_BIwGVY6G = __esm({
         }
       };
       exports.ValueScopeName = ValueScopeName;
-      const line = (0, code_1._)`\n`;
+      const line2 = (0, code_1._)`\n`;
       var ValueScope = class extends Scope {
         constructor(opts) {
           super(opts);
@@ -13492,7 +13492,7 @@ var init_ajvProvider_BIwGVY6G = __esm({
           this._scope = opts.scope;
           this.opts = {
             ...opts,
-            _n: opts.lines ? line : code_1.nil
+            _n: opts.lines ? line2 : code_1.nil
           };
         }
         get() {
@@ -24059,20 +24059,20 @@ ${value2}`, dataLines++;
     }
     if (firstCharCode === 58) {
       if (onComment) {
-        const line2 = chunk.slice(start, end);
-        onComment(line2.slice(chunk.charCodeAt(start + 1) === SPACE ? 2 : 1));
+        const line22 = chunk.slice(start, end);
+        onComment(line22.slice(chunk.charCodeAt(start + 1) === SPACE ? 2 : 1));
       }
       return;
     }
-    const line = chunk.slice(start, end), fieldSeparatorIndex = line.indexOf(":");
+    const line2 = chunk.slice(start, end), fieldSeparatorIndex = line2.indexOf(":");
     if (fieldSeparatorIndex === -1) {
-      processField(line, "", line);
+      processField(line2, "", line2);
       return;
     }
-    const field = line.slice(0, fieldSeparatorIndex), offset = line.charCodeAt(fieldSeparatorIndex + 1) === SPACE ? 2 : 1, value = line.slice(fieldSeparatorIndex + offset);
-    processField(field, value, line);
+    const field = line2.slice(0, fieldSeparatorIndex), offset = line2.charCodeAt(fieldSeparatorIndex + 1) === SPACE ? 2 : 1, value = line2.slice(fieldSeparatorIndex + offset);
+    processField(field, value, line2);
   }
-  function processField(field, value, line) {
+  function processField(field, value, line2) {
     switch (field) {
       case "event":
         eventType = value || void 0;
@@ -24089,7 +24089,7 @@ ${value}`, dataLines++;
           new ParseError(`Invalid \`retry\` value: "${value}"`, {
             type: "invalid-retry",
             value,
-            line
+            line: line2
           })
         );
         break;
@@ -24097,7 +24097,7 @@ ${value}`, dataLines++;
         onError(
           new ParseError(
             `Unknown field "${field.length > 20 ? `${field.slice(0, 20)}\u2026` : field}"`,
-            { type: "unknown-field", field, value, line }
+            { type: "unknown-field", field, value, line: line2 }
           )
         );
         break;
@@ -29959,13 +29959,13 @@ function parseGoldenSet(text) {
   const items = [];
   const ids = /* @__PURE__ */ new Set();
   text.split(/\r?\n/).forEach((rawLine, index) => {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("//"))
+    const line2 = rawLine.trim();
+    if (!line2 || line2.startsWith("//"))
       return;
     const where = `Line ${index + 1}`;
     let raw;
     try {
-      raw = JSON.parse(line);
+      raw = JSON.parse(line2);
     } catch {
       throw new GoldenSetError(`${where}: not valid JSON`);
     }
@@ -31196,6 +31196,7 @@ function item(i, sample, sameSamples) {
   };
 }
 var safeJson = (value) => JSON.stringify(value).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026");
+var wrapData = (mark, value) => `<!-- ${mark} ${safeJson(value)} -->`;
 function replayCheckText(report, prUrl, limit = TEXT_LIMIT) {
   const base = {
     v: 1,
@@ -31213,7 +31214,7 @@ function replayCheckText(report, prUrl, limit = TEXT_LIMIT) {
     reroutes: report.reroutes.slice(0, 10).map((r) => ({ side: r.side, requested: r.requested.slice(0, 200), served: r.served.slice(0, 200) })),
     ...prUrl ? { prUrl: prUrl.slice(0, 500) } : {}
   };
-  const wrap2 = (items2, omitted) => `<!-- ${MARK} ${safeJson({ ...base, items: items2, omittedItems: omitted })} -->`;
+  const wrap2 = (items2, omitted) => wrapData(MARK, { ...base, items: items2, omittedItems: omitted });
   for (const [sample, sameSamples] of [[2e3, true], [2e3, false], [800, false], [300, false]]) {
     const text = wrap2(report.items.map((i) => item(i, sample, sameSamples)), 0);
     if (text.length <= limit)
@@ -31237,6 +31238,38 @@ function replayTitle(report) {
   if (t.error)
     parts.push(`${t.error} could not compare`);
   return parts.join(" \xB7 ");
+}
+var WATCH_CHECK_NAME = "AI Change Guard nightly watch";
+var WATCH_MARK = "ai-change-guard:watch:v1";
+function watchCheckText(w) {
+  return wrapData(WATCH_MARK, {
+    v: 1,
+    model: w.model.slice(0, 200),
+    baselineCreatedAt: w.baselineCreatedAt.slice(0, 40),
+    totals: w.report.totals,
+    alert: w.alert,
+    snapshotChanged: w.snapshotChanged,
+    reroutes: w.reroutes.slice(0, 10).map((r) => ({ requested: r.requested.slice(0, 200), served: r.served.slice(0, 200) })),
+    servedNow: w.servedNow.slice(0, 10).map((m) => m.slice(0, 200))
+  });
+}
+var SAVINGS_CHECK_NAME = "AI Change Guard Money-Finder";
+var SAVINGS_MARK = "ai-change-guard:savings:v1";
+var line = (c) => ({
+  model: c.model.slice(0, 200),
+  qualifies: c.qualifies,
+  ...c.reason ? { reason: c.reason.slice(0, 300) } : {},
+  ...c.savingShare !== void 0 ? { savingShare: c.savingShare } : {},
+  ...c.monthlySaving !== void 0 ? { monthlySaving: c.monthlySaving } : {}
+});
+function savingsCheckText(r) {
+  return wrapData(SAVINGS_MARK, {
+    v: 1,
+    primary: r.primary.slice(0, 200),
+    ...r.callsPerMonth !== void 0 ? { callsPerMonth: r.callsPerMonth } : {},
+    ...r.best ? { best: line(r.best) } : {},
+    candidates: r.candidates.slice(0, 10).map(line)
+  });
 }
 
 // packages/scanner/dist/detect.js
@@ -31320,28 +31353,28 @@ function classifyModelId(literal2) {
 var STRING_RE = /(["'`])((?:\\.|(?!\1)[^\\\n])*)\1/g;
 var CONFIG_VALUE_RE = /^\s*(?:export\s+)?[\w.\-]+\s*[=:]\s*["']?([^"'#\s,]+)/;
 var YAML_ITEM_RE = /^\s*-\s+["']?([^"'#\s,]+)/;
-function valueSpans(line, kind) {
+function valueSpans(line2, kind) {
   const spans = [];
-  for (const m of line.matchAll(STRING_RE)) {
+  for (const m of line2.matchAll(STRING_RE)) {
     if (m[2])
       spans.push({ start: m.index + 1, end: m.index + 1 + m[2].length });
   }
   if (kind === "config") {
-    const m = new RegExp(CONFIG_VALUE_RE.source, "d").exec(line) ?? new RegExp(YAML_ITEM_RE.source, "d").exec(line);
+    const m = new RegExp(CONFIG_VALUE_RE.source, "d").exec(line2) ?? new RegExp(YAML_ITEM_RE.source, "d").exec(line2);
     const at = m?.indices?.[1];
     if (at)
       spans.push({ start: at[0], end: at[1] });
   }
   return spans;
 }
-function candidates2(line, kind) {
+function candidates2(line2, kind) {
   const out = [];
-  for (const m of line.matchAll(STRING_RE)) {
+  for (const m of line2.matchAll(STRING_RE)) {
     if (m[2])
       out.push(m[2]);
   }
   if (kind === "config") {
-    const value = CONFIG_VALUE_RE.exec(line)?.[1] ?? YAML_ITEM_RE.exec(line)?.[1];
+    const value = CONFIG_VALUE_RE.exec(line2)?.[1] ?? YAML_ITEM_RE.exec(line2)?.[1];
     if (value)
       out.push(value);
   }
@@ -31409,11 +31442,11 @@ function scanText(file, content, kind, apiRules) {
   const findings = [];
   let callSites = 0;
   const lines = content.split(/\r?\n/);
-  lines.forEach((line, index) => {
+  lines.forEach((line2, index) => {
     const lineNo = index + 1;
-    const snippet = line.trim().slice(0, 160);
+    const snippet = line2.trim().slice(0, 160);
     const seen = /* @__PURE__ */ new Set();
-    for (const candidate of candidates2(line, kind)) {
+    for (const candidate of candidates2(line2, kind)) {
       const hit = classifyModelId(candidate);
       if (!hit || seen.has(hit.id))
         continue;
@@ -31422,17 +31455,17 @@ function scanText(file, content, kind, apiRules) {
       seen.add(hit.id);
       findings.push({ file, line: lineNo, kind: "model", snippet, model: hit });
     }
-    if (kind === "code" && isAiFile && seen.size === 0 && !COMMENT_LINE_RE.test(line)) {
-      const dynamic = DYNAMIC_MODEL_RE.exec(line);
+    if (kind === "code" && isAiFile && seen.size === 0 && !COMMENT_LINE_RE.test(line2)) {
+      const dynamic = DYNAMIC_MODEL_RE.exec(line2);
       const value = dynamic?.[1];
       if (value && !TYPE_WORDS.has(value)) {
         findings.push({ file, line: lineNo, kind: "dynamic-model", snippet });
       }
     }
-    if (kind === "code" && SDK_CALL_PATTERNS.some((re) => re.test(line)))
+    if (kind === "code" && SDK_CALL_PATTERNS.some((re) => re.test(line2)))
       callSites++;
     for (const rule of apiRules) {
-      if (rule.regexes.some((re) => re.test(line))) {
+      if (rule.regexes.some((re) => re.test(line2))) {
         findings.push({ file, line: lineNo, kind: "deprecated-api", snippet, apiId: rule.id });
       }
     }
@@ -31569,10 +31602,10 @@ function fromRequirements(content) {
   const out = [];
   const privateIndex = /^\s*(--index-url|--extra-index-url|-i\s)/m.test(content);
   for (const raw of content.split("\n")) {
-    const line = raw.replace(/\s+#.*$/, "").trim();
-    if (!line || line.startsWith("#") || line.startsWith("-"))
+    const line2 = raw.replace(/\s+#.*$/, "").trim();
+    if (!line2 || line2.startsWith("#") || line2.startsWith("-"))
       continue;
-    const m = /^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*(?:===?\s*([^\s;,]+))?/.exec(line);
+    const m = /^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*(?:===?\s*([^\s;,]+))?/.exec(line2);
     if (m)
       out.push({ name: m[1], ...m[2] && !m[2].includes("*") ? { version: m[2] } : {}, needle: raw, ...privateIndex ? { privateIndex } : {} });
   }
@@ -31631,10 +31664,10 @@ function lineOf(content, needle) {
   const at = content.indexOf(needle);
   if (at < 0)
     return 1;
-  let line = 1;
+  let line2 = 1;
   for (let i = content.indexOf("\n"); i >= 0 && i < at; i = content.indexOf("\n", i + 1))
-    line++;
-  return line;
+    line2++;
+  return line2;
 }
 
 // packages/scanner/dist/packages.js
@@ -32113,14 +32146,14 @@ function callBlock(lines, start, column) {
   }
   return parts.join("\n");
 }
-function indentOf(line) {
-  return line.length - line.trimStart().length;
+function indentOf(line2) {
+  return line2.length - line2.trimStart().length;
 }
 function insideLoop(lines, index, column) {
-  const line = lines[index] ?? "";
-  if (LOOP_RE.test(line.slice(0, column)))
+  const line2 = lines[index] ?? "";
+  if (LOOP_RE.test(line2.slice(0, column)))
     return true;
-  const indent = indentOf(line);
+  const indent = indentOf(line2);
   for (let j = index - 1; j >= 0 && j >= index - 8; j--) {
     const prev = lines[j] ?? "";
     if (prev.trim() === "")
@@ -32145,30 +32178,30 @@ function findTokenTips(file, content, kind) {
   let cacheTipGiven = false;
   let jsonTipGiven = false;
   let inDocstring = false;
-  lines.forEach((line, index) => {
-    const quoteCount = (line.match(TRIPLE_QUOTE_RE) ?? []).length;
+  lines.forEach((line2, index) => {
+    const quoteCount = (line2.match(TRIPLE_QUOTE_RE) ?? []).length;
     const wasInDocstring = inDocstring;
     if (quoteCount % 2 === 1)
       inDocstring = !inDocstring;
-    if (wasInDocstring || quoteCount > 0 || COMMENT_LINE_RE2.test(line))
+    if (wasInDocstring || quoteCount > 0 || COMMENT_LINE_RE2.test(line2))
       return;
-    const tip = (rule) => tips.push({ file, line: index + 1, rule, snippet: line.trim().slice(0, 160) });
-    const call = CALL_RE.exec(line);
-    if (call && !EMPTY_ARGS_RE.test(line.slice(call.index + call[0].length - 1))) {
+    const tip = (rule) => tips.push({ file, line: index + 1, rule, snippet: line2.trim().slice(0, 160) });
+    const call = CALL_RE.exec(line2);
+    if (call && !EMPTY_ARGS_RE.test(line2.slice(call.index + call[0].length - 1))) {
       const column = call.index + call[0].length - 1;
       const block = callBlock(lines, index, column);
       if (!OUTPUT_LIMIT_RE.test(block) && !SPREAD_RE.test(block))
         tip("no-output-limit");
-      if (!usesCacheControl && !cacheTipGiven && ANTHROPIC_CALL_RE.test(line) && SYSTEM_PARAM_RE.test(block)) {
+      if (!usesCacheControl && !cacheTipGiven && ANTHROPIC_CALL_RE.test(line2) && SYSTEM_PARAM_RE.test(block)) {
         tip("no-prompt-caching");
         cacheTipGiven = true;
       }
       if (!usesBatch && insideLoop(lines, index, call.index))
         tip("loop-not-batched");
     }
-    if (PROMPT_VAR_RE.test(line) && CHANGING_VALUE_RE.test(line))
+    if (PROMPT_VAR_RE.test(line2) && CHANGING_VALUE_RE.test(line2))
       tip("cache-breaker");
-    if (!usesStructuredOutput && !jsonTipGiven && JSON_PARSE_RE.test(line) && AI_OUTPUT_RE.test(line)) {
+    if (!usesStructuredOutput && !jsonTipGiven && JSON_PARSE_RE.test(line2) && AI_OUTPUT_RE.test(line2)) {
       tip("json-without-structured-output");
       jsonTipGiven = true;
     }
@@ -32259,14 +32292,14 @@ function findRequestIssues(file, content, kind) {
   const lines = content.split(/\r?\n/);
   const out = [];
   let inDocstring = false;
-  lines.forEach((line, index) => {
-    const quotes = (line.match(TRIPLE_QUOTE_RE2) ?? []).length;
+  lines.forEach((line2, index) => {
+    const quotes = (line2.match(TRIPLE_QUOTE_RE2) ?? []).length;
     const wasInDocstring = inDocstring;
     if (quotes % 2 === 1)
       inDocstring = !inDocstring;
-    if (wasInDocstring || quotes > 0 || COMMENT_LINE_RE2.test(line))
+    if (wasInDocstring || quotes > 0 || COMMENT_LINE_RE2.test(line2))
       return;
-    const call = ANTHROPIC_CALL_RE2.exec(line);
+    const call = ANTHROPIC_CALL_RE2.exec(line2);
     if (!call)
       return;
     const block = callBlock(lines, index, call.index + call[0].length - 1);
@@ -32690,22 +32723,22 @@ var SINKS = [
   { name: "raw HTML", re: /\bdangerouslySetInnerHTML\b|\.(?:innerHTML|outerHTML)\s*=|\bdocument\.write\s*\(|\bv-html\b|\bmark_safe\s*\(|\bMarkup\s*\(/ }
 ];
 var PARSED_RE = /\b(?:json\.loads|JSON\.parse|model_validate(?:_json)?|parse_obj|safeParse|\.parse)\s*\(/;
-function firstArgument(line, from) {
+function firstArgument(line2, from) {
   let depth = 0;
-  for (let i = from; i < line.length; i++) {
-    const c = line[i];
+  for (let i = from; i < line2.length; i++) {
+    const c = line2[i];
     if ("([{".includes(c))
       depth++;
     else if (")]}".includes(c)) {
       if (depth === 0)
-        return line.slice(from, i);
+        return line2.slice(from, i);
       depth--;
     } else if (c === "," && depth === 0)
-      return line.slice(from, i);
+      return line2.slice(from, i);
   }
-  return line.slice(from);
+  return line2.slice(from);
 }
-var usesVar = (line, name) => new RegExp(`(?<![\\w.$])${name.replace(/\$/g, "\\$")}(?![\\w$])`).test(line);
+var usesVar = (line2, name) => new RegExp(`(?<![\\w.$])${name.replace(/\$/g, "\\$")}(?![\\w$])`).test(line2);
 var USER_INPUT_NAME_RE = /^(?:user|input|query|question|message|msg|request|req|body|params|comment|feedback|search|q|text)(?:[._[\]'"]|$)|user_?input|user_?message|user_?query|user_?question|req\.(?:body|query|params)/i;
 var TOOL_CONTEXT_RE = /\btools\s*[=:[]|function_declarations|functionDeclarations|input_schema|\bparameters\s*["']?\s*:|@(?:\w+\.)?tool\b|\btool\s*\(|\bFunctionTool\b|\bStructuredTool\b|@function_tool\b/;
 var CONFIRMATION_RE = /confirm|approv|human_in_the_loop|humanInTheLoop|\binterrupt|needsApproval|requires?_approval|ask_user|askUser/i;
@@ -32831,20 +32864,20 @@ function findSecurityIssues(file, content, kind) {
   const out = [];
   const add = (index, rule, detail) => out.push({ file, line: index + 1, rule, detail });
   const localEnv = isLocalEnvFile(file);
-  lines.forEach((line, i) => {
+  lines.forEach((line2, i) => {
     if (!localEnv) {
       for (const { provider, re } of KEY_PATTERNS) {
-        for (const m of line.matchAll(re)) {
+        for (const m of line2.matchAll(re)) {
           if (!looksReal(m[0]))
             continue;
           add(i, "ai-key-exposed", isEnvFile(file) ? `${provider} key ${mask(m[0])} in ${basename3(file)}: exposed if this file is committed (keep it git-ignored)` : `${provider} key ${mask(m[0])} written in the file`);
         }
       }
     }
-    const pub = PUBLIC_ENV_RE.exec(line);
+    const pub = PUBLIC_ENV_RE.exec(line2);
     if (pub)
       add(i, "ai-key-exposed", `${pub[0]} is sent to the browser by the build`);
-    if (BROWSER_FLAG_RE.test(line))
+    if (BROWSER_FLAG_RE.test(line2))
       add(i, "ai-key-exposed", "dangerouslyAllowBrowser: true puts the API key in the browser");
   });
   if (isMcpConfig(file, content, kind))
@@ -32852,19 +32885,19 @@ function findSecurityIssues(file, content, kind) {
   if (kind !== "code" || TEST_FILE_RE.test(file) || !isAiContent(content))
     return out.sort((a, b) => a.line - b.line);
   const fromModel = /* @__PURE__ */ new Set();
-  lines.forEach((line, i) => {
-    if (COMMENT_LINE_RE3.test(line))
+  lines.forEach((line2, i) => {
+    if (COMMENT_LINE_RE3.test(line2))
       return;
-    const assigned = ASSIGN_RE.exec(line)?.[1];
-    const direct = AI_OUTPUT_RE2.test(line);
-    const rhs = line.slice(line.indexOf("=") + 1);
+    const assigned = ASSIGN_RE.exec(line2)?.[1];
+    const direct = AI_OUTPUT_RE2.test(line2);
+    const rhs = line2.slice(line2.indexOf("=") + 1);
     if (assigned && !PARSED_RE.test(rhs) && (direct || [...fromModel].some((v) => usesVar(rhs, v))))
       fromModel.add(assigned);
     for (const sink of SINKS) {
-      const hit = sink.re.exec(line);
+      const hit = sink.re.exec(line2);
       if (!hit)
         continue;
-      const scope = sink.name === "SQL" ? firstArgument(line, hit.index + hit[0].length) : line;
+      const scope = sink.name === "SQL" ? firstArgument(line2, hit.index + hit[0].length) : line2;
       if (sink.name === "SQL" && !AI_OUTPUT_RE2.test(scope) && ![...fromModel].some((v) => usesVar(scope, v)))
         continue;
       const via = AI_OUTPUT_RE2.test(scope) ? null : [...fromModel].find((v) => usesVar(scope, v));
@@ -33385,20 +33418,20 @@ function findingReason(finding, from) {
   const raw = hit.raw.trim().toLowerCase();
   return raw === from || raw.endsWith(`/${from}`) ? null : REASONS.other;
 }
-function rewriteLine(line, kind, from, to, opts) {
-  const spans = valueSpans(line, kind);
-  const lower = line.toLowerCase();
+function rewriteLine(line2, kind, from, to, opts) {
+  const spans = valueSpans(line2, kind);
+  const lower = line2.toLowerCase();
   const reasons = [];
   let out = "";
   let last = 0;
   for (let i = lower.indexOf(from); i !== -1; i = lower.indexOf(from, i + 1)) {
     const end = i + from.length;
-    if (end > line.length || i > 0 && ID_CHAR_BEFORE.test(line[i - 1]) || end < line.length && ID_CHAR_AFTER.test(line[end]))
+    if (end > line2.length || i > 0 && ID_CHAR_BEFORE.test(line2[i - 1]) || end < line2.length && ID_CHAR_AFTER.test(line2[end]))
       continue;
     if (!spans.some((s) => i >= s.start && end <= s.end))
       continue;
     let start = i;
-    while (start > 0 && TOKEN_CHAR.test(line[start - 1]))
+    while (start > 0 && TOKEN_CHAR.test(line2[start - 1]))
       start--;
     const prefix = lower.slice(start, i);
     if (prefix.startsWith("ft:") || prefix.endsWith("ft:"))
@@ -33410,11 +33443,11 @@ function rewriteLine(line, kind, from, to, opts) {
     else if (opts.prefix && !prefix.endsWith(`${opts.prefix.toLowerCase()}/`)) {
       reasons.push(`Not called through ${opts.prefix}/, the route the replay tested.`);
     } else {
-      out += line.slice(last, i) + to;
+      out += line2.slice(last, i) + to;
       last = end;
     }
   }
-  return { line: out + line.slice(last), reasons };
+  return { line: out + line2.slice(last), reasons };
 }
 async function planSwitch(root, findings, from, to, opts = {}) {
   const ids = checkSwitchIds(from, to);
@@ -33626,7 +33659,7 @@ function listed(items, render, more) {
   return [...items.slice(0, MAX_LISTED).map(render), ...items.length > MAX_LISTED ? [`- \u2026and ${items.length - MAX_LISTED} more ${more}`] : []];
 }
 function evidenceBody(plan, replay, scanPath, note, extra, text) {
-  const where = (file, line) => `\`${posix.join(scanPath || ".", file)}:${line}\``;
+  const where = (file, line2) => `\`${posix.join(scanPath || ".", file)}:${line2}\``;
   const t = replay.totals;
   const prompts = replay.items.length;
   const lines = [
@@ -33833,23 +33866,23 @@ function switchIds(oldModel, newModel) {
   const ids = checkSwitchIds(last(a.model), last(b.model));
   return prefix(a.model) ? { ...ids, prefix: prefix(a.model) } : ids;
 }
-async function publishReplayCheck({ env, log, github, replay, prUrl, failOn }) {
+async function publishCheck({ env, log, github, what, output }) {
   const repo = env.GITHUB_REPOSITORY ?? "";
   const sha = env.GITHUB_SHA ?? "";
   const token = input("github-token", env) || env.GITHUB_TOKEN || "";
   if (!repo || !sha || !github && !token) return;
   try {
     await (github ?? githubApi(token, env.GITHUB_API_URL))("POST", `/repos/${repo}/check-runs`, {
-      name: REPLAY_CHECK_NAME,
+      name: output.name,
       head_sha: sha,
       status: "completed",
-      conclusion: replayConclusion(replay, failOn),
-      output: { title: replayTitle(replay), summary: formatReplayMarkdown(replay).slice(0, 6e4), text: replayCheckText(replay, prUrl) }
+      conclusion: output.conclusion,
+      output: { title: output.title, summary: output.summary.slice(0, 6e4), text: output.text }
     });
-    log("AI Change Guard: saved the model switch report as a check run; it shows on your AI Change Guard dashboard");
+    log(`AI Change Guard: saved the ${what} as a check run; it shows on your AI Change Guard dashboard`);
   } catch (error2) {
     const hint = error2 instanceof GitHubError && error2.status === 403 ? `add "checks: write" to the workflow's permissions to see this report on your AI Change Guard dashboard` : error2 instanceof Error ? error2.message : String(error2);
-    log(`::notice::AI Change Guard: could not save the model switch report as a check run (${hint}).`);
+    log(`::notice::AI Change Guard: could not save the ${what} as a check run (${hint}).`);
   }
 }
 async function run({ env, today, log, client, github }) {
@@ -33916,6 +33949,19 @@ ${check2.summary}`);
       );
     }
     const t = watch.report.totals;
+    await publishCheck({
+      env,
+      log,
+      github,
+      what: "nightly watch",
+      output: {
+        name: WATCH_CHECK_NAME,
+        conclusion: watch.alert ? "failure" : "success",
+        title: `${t.same} same \xB7 ${t.changed} changed \xB7 ${t.broken} broken${watch.reroutes.length ? " \xB7 rerouted" : ""}`,
+        summary: formatWatchMarkdown(watch),
+        text: watchCheckText(watch)
+      }
+    });
     log(`${watch.alert ? "::error::" : ""}AI Change Guard watch: ${t.same} same, ${t.changed} changed, ${t.broken} broken${watch.reroutes.length ? `, rerouted to ${watch.reroutes.map((r) => r.served).join(", ")}` : ""}`);
     return failed || watch.alert ? 1 : 0;
   }
@@ -34020,6 +34066,19 @@ ${check2.summary}`);
     });
     const card = formatSavingsMarkdown(result);
     await summary(card);
+    await publishCheck({
+      env,
+      log,
+      github,
+      what: "Money-Finder result",
+      output: {
+        name: SAVINGS_CHECK_NAME,
+        conclusion: result.best ? "success" : "neutral",
+        title: result.best ? `${result.best.model} passes, ${Math.round((result.best.savingShare ?? 0) * 100)}% cheaper per call` : "No cheaper model passed",
+        summary: card,
+        text: savingsCheckText(result)
+      }
+    });
     log(result.best ? `AI Change Guard Money-Finder: ${result.best.model} passes and is ${Math.round((result.best.savingShare ?? 0) * 100)}% cheaper per call` : "AI Change Guard Money-Finder: no cheaper model passed");
     if (openPr && result.best) {
       const plan = plans.get(result.best.model);
@@ -34107,13 +34166,25 @@ ${check2.summary}`);
         }
       }
     } finally {
-      await publishReplayCheck({ env, log, github, replay, prUrl, failOn: replayFailOn });
+      await publishCheck({
+        env,
+        log,
+        github,
+        what: "model switch report",
+        output: {
+          name: REPLAY_CHECK_NAME,
+          conclusion: replayConclusion(replay, replayFailOn),
+          title: replayTitle(replay),
+          summary: formatReplayMarkdown(replay),
+          text: replayCheckText(replay, prUrl)
+        }
+      });
     }
   }
   return failed ? 1 : 0;
 }
 if (process.env.GITHUB_ACTIONS === "true") {
-  run({ env: process.env, today: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10), log: (line) => console.log(line) }).then(
+  run({ env: process.env, today: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10), log: (line2) => console.log(line2) }).then(
     (code3) => {
       process.exitCode = code3;
     },
