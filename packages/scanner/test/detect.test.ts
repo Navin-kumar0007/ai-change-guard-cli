@@ -44,8 +44,23 @@ describe("classifyModelId", () => {
   });
 
   it("counts short names that could be something else only in AI code", () => {
-    for (const id of ["whisper-1", "tts-1", "tts-1-hd", "sora-2", "embedding-001"]) expect(classifyModelId(id)?.weak, id).toBe(true);
-    for (const notModel of ["gpt-images", "tts-1x", "dall-e-4", "veo-latest"]) expect(classifyModelId(notModel), notModel).toBeNull();
+    for (const id of ["whisper-1", "tts-1", "tts-1-hd", "sora-2", "embedding-001", "whisper", "tts", "tts-hd"]) expect(classifyModelId(id)?.weak, id).toBe(true);
+    for (const notModel of ["gpt-images", "tts-1x", "dall-e-4", "veo-latest", "whispers", "tts-voice", "gpt-lively"]) expect(classifyModelId(notModel), notModel).toBeNull();
+  });
+
+  it("recognises Vertex AI's older names, which are retired, so code still using them is broken", () => {
+    for (const id of ["text-bison", "chat-bison@002", "code-bison-32k", "code-gecko", "textembedding-gecko@003", "textembedding-gecko-multilingual@001", "multimodalembedding@001", "imagegeneration@006", "text-multilingual-embedding-002"]) {
+      expect(classifyModelId(id), id).toMatchObject({ provider: "google", id });
+    }
+    expect(classifyModelId("imagetext")?.weak).toBe(true);
+    for (const notModel of ["text-bisons", "imagegeneration", "code-geckos"]) expect(classifyModelId(notModel), notModel).toBeNull();
+  });
+
+  it("recognises OpenAI's newer names as Azure lists them", () => {
+    for (const id of ["gpt-chat-latest", "gpt-live-1", "gpt-live-transcribe", "gpt-transcribe", "codex-mini", "codex-mini-latest"]) {
+      expect(classifyModelId(id), id).toMatchObject({ provider: "openai", id });
+      expect(classifyModelId(id)?.weak, id).toBeFalsy();
+    }
   });
 
   it("flags fine-tuned models", () => {

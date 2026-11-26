@@ -31257,14 +31257,14 @@ var GATEWAY_PLATFORMS = {
   bedrock: "aws-bedrock",
   azure: "azure-openai"
 };
-var OPENAI_RE = /^(?:gpt-(?:\d|image-|realtime|audio)[a-z0-9.\-]*|chatgpt-(?:4o|image)-latest|dall-e-[23]|(?:text|code)-davinci-\d{3}|(?:babbage|davinci)-002|text-moderation-(?:latest|stable|\d{3})|codex-mini-latest|computer-use-preview(?:-\d{4}-\d{2}-\d{2})?|text-embedding-(?:3-small|3-large|ada-002))$/;
-var OPENAI_WEAK_RE = /^(?:whisper-1|tts-1(?:-hd)?(?:-\d{4})?|sora-2(?:-pro)?(?:-\d{4}-\d{2}-\d{2})?)$/;
+var OPENAI_RE = /^(?:gpt-(?:\d|image-|realtime|audio|live-|transcribe|chat-latest)[a-z0-9.\-]*|chatgpt-(?:4o|image)-latest|dall-e-[23]|(?:text|code)-davinci-\d{3}|(?:babbage|davinci)-002|text-moderation-(?:latest|stable|\d{3})|codex-mini(?:-latest)?|computer-use-preview(?:-\d{4}-\d{2}-\d{2})?|text-embedding-(?:3-small|3-large|ada-002))$/;
+var OPENAI_WEAK_RE = /^(?:whisper(?:-1)?|tts(?:-hd)?|tts-1(?:-hd)?(?:-\d{4})?|sora-2(?:-pro)?(?:-\d{4}-\d{2}-\d{2})?)$/;
 var OPENAI_O_SERIES_RE = /^o\d(?:-(?:mini|pro|preview|deep-research))*(?:-\d{4}-\d{2}-\d{2})?$/;
 var CLAUDE_RE = /^claude-[a-z0-9.\-]+$/;
 var BEDROCK_CLAUDE_RE = /^(?:(?:us|eu|apac|global)\.)?anthropic\.(claude-[a-z0-9.\-]+?)(?:-v\d+(?::\d+)?)?$/;
 var GEMINI_RE = /^(?:models\/)?(gemini-[a-z0-9.\-]+)$/;
-var GOOGLE_RE = /^(?:models\/)?(text-embedding-0\d{2}|embedding-gecko-001|imagen-\d[a-z0-9.\-]*|veo-\d[a-z0-9.\-]*)$/;
-var GOOGLE_WEAK_RE = /^(?:models\/)?(embedding-001)$/;
+var GOOGLE_RE = /^(?:models\/)?(text-embedding-0\d{2}|text-multilingual-embedding-\d{3}|embedding-gecko-001|textembedding-gecko(?:-multilingual)?(?:@\d{3})?|multimodalembedding(?:@\d{3})?|imagegeneration@\d{3}|(?:text|chat|code)-bison(?:-32k)?(?:@\d{3})?|code-gecko(?:@\d{3})?|imagen-\d[a-z0-9.\-]*|veo-\d[a-z0-9.\-]*)$/;
+var GOOGLE_WEAK_RE = /^(?:models\/)?(embedding-001|imagetext(?:@\d{3})?)$/;
 var MISTRAL_RE = /^(?:mistral|codestral|pixtral|ministral|magistral|devstral|open-mistral|open-mixtral)-[a-z0-9.\-]+$/;
 function classifyModelId(literal2) {
   let s = literal2.trim().toLowerCase();

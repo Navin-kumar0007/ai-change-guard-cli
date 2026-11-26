@@ -2,7 +2,7 @@
  "$comment": "What each official page said when a person last reviewed it against the catalog. Written by `node scripts/check-catalog.mjs --update`.",
  "pages": {
   "https://aistudio.google.com/docs/deprecations": {
-   "checked": "2026-11-24",
+   "checked": "2026-11-26",
    "ids": [
     "embedding-001",
     "embedding-gecko-001",
@@ -184,7 +184,7 @@
    ]
   },
   "https://developers.openai.com/api/docs/deprecations": {
-   "checked": "2026-11-24",
+   "checked": "2026-11-26",
    "ids": [
     "babbage-002",
     "chatgpt-4o-latest",
@@ -310,6 +310,7 @@
     "gpt-image-2.5-sunburst",
     "gpt-image-2.6-flare",
     "gpt-image-2.6-sunburst",
+    "gpt-live-transcribe",
     "gpt-realtime",
     "gpt-realtime-1.5",
     "gpt-realtime-2.1",
@@ -318,6 +319,7 @@
     "gpt-realtime-mini",
     "gpt-realtime-mini-2025-10-06",
     "gpt-realtime-mini-2025-12-15",
+    "gpt-transcribe",
     "o1",
     "o1-2024-12-17",
     "o1-mini",
@@ -437,6 +439,7 @@
     "2026-11-30",
     "2026-12-01",
     "2026-12-11",
+    "2026-12-15",
     "2027-01-06",
     "2027-01-11",
     "2027-01-14",
@@ -447,18 +450,11 @@
     "2027-04-01"
    ]
   },
-  "https://docs.cloud.google.com/vertex-ai/generative-ai/docs/deprecations": {
-   "checked": "2026-11-24",
-   "ids": [],
-   "dates": [
-    "2025-06-24",
-    "2026-06-24",
-    "2026-11-10"
-   ]
-  },
-  "https://docs.cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions": {
-   "checked": "2026-11-24",
+  "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-versions": {
+   "checked": "2026-11-26",
    "ids": [
+    "chat-bison",
+    "code-gecko",
     "gemini-1.0-pro-001",
     "gemini-1.0-pro-002",
     "gemini-1.0-pro-vision-001",
@@ -495,12 +491,26 @@
     "gemini-live-2.5-flash-native-audio",
     "gemini-nano-banana-2.1",
     "gemini-omni-1.2-flash",
+    "imagegeneration@002",
+    "imagegeneration@003",
+    "imagegeneration@004",
+    "imagegeneration@005",
+    "imagegeneration@006",
     "imagen-3.0-generate-001",
     "imagen-3.0-generate-002",
     "imagen-4.0-generate-001",
     "imagen-4.0-ultra-generate-001",
+    "imagetext",
+    "multimodalembedding@001",
+    "text-bison",
     "text-embedding-004",
     "text-embedding-005",
+    "text-multilingual-embedding-002",
+    "textembedding-gecko-multilingual@001",
+    "textembedding-gecko@001",
+    "textembedding-gecko@002",
+    "textembedding-gecko@003",
+    "tts",
     "veo-2.0-generate-001",
     "veo-3.0-fast-generate-001",
     "veo-3.0-generate-001",
@@ -575,8 +585,17 @@
     "2028-05-20"
    ]
   },
+  "https://docs.cloud.google.com/vertex-ai/generative-ai/docs/deprecations": {
+   "checked": "2026-11-26",
+   "ids": [],
+   "dates": [
+    "2025-06-24",
+    "2026-06-24",
+    "2026-11-10"
+   ]
+  },
   "https://github.com/google-gemini/deprecated-generative-ai-js": {
-   "checked": "2026-11-24",
+   "checked": "2026-11-26",
    "ids": [],
    "dates": [
     "2025-11-30",
@@ -584,7 +603,7 @@
    ]
   },
   "https://github.com/google-gemini/deprecated-generative-ai-python": {
-   "checked": "2026-11-24",
+   "checked": "2026-11-26",
    "ids": [],
    "dates": [
     "2025-11-30",
@@ -592,7 +611,7 @@
    ]
   },
   "https://learn.microsoft.com/en-us/azure/foundry/openai/concepts/model-retirement-schedule": {
-   "checked": "2026-11-24",
+   "checked": "2026-11-26",
    "ids": [
     "claude-fable-5",
     "claude-fable-5-1",
@@ -611,6 +630,7 @@
     "claude-sonnet-5",
     "claude-sonnet-5-5",
     "codestral-2501",
+    "codex-mini",
     "gpt-4.1",
     "gpt-4.1-mini",
     "gpt-4.1-nano",
@@ -648,12 +668,15 @@
     "gpt-audio",
     "gpt-audio-1.5",
     "gpt-audio-mini",
+    "gpt-chat-latest",
     "gpt-image-1",
     "gpt-image-1-mini",
     "gpt-image-1.5",
     "gpt-image-2",
     "gpt-image-2.5-flare",
     "gpt-image-2.5-sunburst",
+    "gpt-live-1",
+    "gpt-live-transcribe",
     "gpt-realtime",
     "gpt-realtime-1.5",
     "gpt-realtime-2",
@@ -662,6 +685,7 @@
     "gpt-realtime-mini",
     "gpt-realtime-translate",
     "gpt-realtime-whisper",
+    "gpt-transcribe",
     "ministral-3b",
     "ministral-ministral-4b-instruct",
     "mistral-document-ai-2512",
@@ -680,7 +704,10 @@
     "o4-mini",
     "text-embedding-3-large",
     "text-embedding-3-small",
-    "text-embedding-ada-002"
+    "text-embedding-ada-002",
+    "tts",
+    "tts-hd",
+    "whisper"
    ],
    "dates": [
     "2024-05-13",
@@ -771,7 +798,6 @@
     "2027-01-23",
     "2027-01-26",
     "2027-01-27",
-    "2027-01-31",
     "2027-02-02",
     "2027-02-03",
     "2027-02-04",
@@ -834,7 +860,7 @@
    ]
   },
   "https://platform.claude.com/docs/en/about-claude/model-deprecations": {
-   "checked": "2026-11-24",
+   "checked": "2026-11-26",
    "ids": [
     "claude-1.0",
     "claude-1.1",
@@ -924,7 +950,7 @@
    ]
   },
   "https://pypi.org/project/google-generativeai/": {
-   "checked": "2026-11-24",
+   "checked": "2026-11-26",
    "ids": [],
    "dates": [
     "2023-05-03",

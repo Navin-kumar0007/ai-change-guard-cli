@@ -52,16 +52,19 @@ const GATEWAY_PLATFORMS: Record<string, Platform | undefined> = {
 };
 
 const OPENAI_RE =
-  /^(?:gpt-(?:\d|image-|realtime|audio)[a-z0-9.\-]*|chatgpt-(?:4o|image)-latest|dall-e-[23]|(?:text|code)-davinci-\d{3}|(?:babbage|davinci)-002|text-moderation-(?:latest|stable|\d{3})|codex-mini-latest|computer-use-preview(?:-\d{4}-\d{2}-\d{2})?|text-embedding-(?:3-small|3-large|ada-002))$/;
-/** Short OpenAI names that could be other things in code (a file name, a voice): counted only near AI code. */
-const OPENAI_WEAK_RE = /^(?:whisper-1|tts-1(?:-hd)?(?:-\d{4})?|sora-2(?:-pro)?(?:-\d{4}-\d{2}-\d{2})?)$/;
+  /^(?:gpt-(?:\d|image-|realtime|audio|live-|transcribe|chat-latest)[a-z0-9.\-]*|chatgpt-(?:4o|image)-latest|dall-e-[23]|(?:text|code)-davinci-\d{3}|(?:babbage|davinci)-002|text-moderation-(?:latest|stable|\d{3})|codex-mini(?:-latest)?|computer-use-preview(?:-\d{4}-\d{2}-\d{2})?|text-embedding-(?:3-small|3-large|ada-002))$/;
+/** Short OpenAI names that could be other things in code (a file name, a voice): counted only near AI code. Azure deploys
+ * Whisper and TTS under the bare names "whisper", "tts" and "tts-hd". */
+const OPENAI_WEAK_RE = /^(?:whisper(?:-1)?|tts(?:-hd)?|tts-1(?:-hd)?(?:-\d{4})?|sora-2(?:-pro)?(?:-\d{4}-\d{2}-\d{2})?)$/;
 const OPENAI_O_SERIES_RE = /^o\d(?:-(?:mini|pro|preview|deep-research))*(?:-\d{4}-\d{2}-\d{2})?$/;
 const CLAUDE_RE = /^claude-[a-z0-9.\-]+$/;
 const BEDROCK_CLAUDE_RE = /^(?:(?:us|eu|apac|global)\.)?anthropic\.(claude-[a-z0-9.\-]+?)(?:-v\d+(?::\d+)?)?$/;
 const GEMINI_RE = /^(?:models\/)?(gemini-[a-z0-9.\-]+)$/;
 /** Google's other model families on the Gemini API and Vertex AI: embeddings, Imagen, Veo. */
-const GOOGLE_RE = /^(?:models\/)?(text-embedding-0\d{2}|embedding-gecko-001|imagen-\d[a-z0-9.\-]*|veo-\d[a-z0-9.\-]*)$/;
-const GOOGLE_WEAK_RE = /^(?:models\/)?(embedding-001)$/;
+/** Older Vertex AI names too: PaLM 2 (text-bison), "@"-versioned embeddings and Imagen 2, all retired in 2025-2026. */
+const GOOGLE_RE =
+  /^(?:models\/)?(text-embedding-0\d{2}|text-multilingual-embedding-\d{3}|embedding-gecko-001|textembedding-gecko(?:-multilingual)?(?:@\d{3})?|multimodalembedding(?:@\d{3})?|imagegeneration@\d{3}|(?:text|chat|code)-bison(?:-32k)?(?:@\d{3})?|code-gecko(?:@\d{3})?|imagen-\d[a-z0-9.\-]*|veo-\d[a-z0-9.\-]*)$/;
+const GOOGLE_WEAK_RE = /^(?:models\/)?(embedding-001|imagetext(?:@\d{3})?)$/;
 const MISTRAL_RE = /^(?:mistral|codestral|pixtral|ministral|magistral|devstral|open-mistral|open-mixtral)-[a-z0-9.\-]+$/;
 
 export function classifyModelId(literal: string): ModelHit | null {
