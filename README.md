@@ -23,12 +23,10 @@ AI providers retire models on a schedule. When a model you call is retired, requ
 ## Quick start
 
 ```
-git clone https://github.com/Navin-kumar0007/ai-change-guard-cli
-cd ai-change-guard-cli
-npm install
-npm run build
-node packages/scanner/dist/cli.js scan /path/to/your/app
+npx ai-change-guard scan /path/to/your/app
 ```
+
+Node.js 20 or later. To work on the code instead, `git clone` this repository, run `npm install && npm run build`, and use `node packages/scanner/dist/cli.js` wherever this README says `npx ai-change-guard`.
 
 Example output:
 
@@ -51,22 +49,22 @@ Options: `--json`, `--fail-on retired|retiring` (exit code 1 for CI), `--today Y
 Get a golden set of real prompts. The quickest way is from logs you already have:
 
 ```
-node packages/scanner/dist/cli.js import exported-logs.jsonl --out golden.jsonl --model gpt-4o
+npx ai-change-guard import exported-logs.jsonl --out golden.jsonl --model gpt-4o
 ```
 
 `import` reads JSON or JSONL exports from Langfuse, Helicone and OpenTelemetry (GenAI spans), or plain logs of OpenAI, Anthropic or Gemini requests, by recognising the request inside each record. It keeps up to 50 distinct prompts spread over the log (`--limit`), skips tool-call conversations and images, and adds checks from the logged answers: a JSON answer becomes a JSON check, a tool call becomes a tool check. The file holds real user messages, so read it before you commit it. No logs at all yet? `starter` finds the system prompts in your code and has a model write realistic user messages for each one (one call per prompt, on your own key):
 
 ```
-node packages/scanner/dist/cli.js starter ./my-app --model openai:gpt-4o-mini --out golden.jsonl
+npx ai-change-guard starter ./my-app --model openai:gpt-4o-mini --out golden.jsonl
 ```
 
-The system prompts stay exactly as written in your code, and a JSON check is added where your code expects JSON. The user messages are made up, so read them and replace the set with real calls when you can. To collect real calls, add the [recorder](packages/recorder/README.md) to your app (three lines in Node.js or Python): it saves your real AI calls to `ai-calls.jsonl` without headers or API keys, ready for `import`. You can also write prompts by hand (see [`examples/support-bot.jsonl`](examples/support-bot.jsonl)).
+The system prompts stay exactly as written in your code, and a JSON check is added where your code expects JSON. The user messages are made up, so read them and replace the set with real calls when you can. To collect real calls, add the [recorder](packages/recorder/README.md) to your app (three lines in Node.js or Python): it saves your real AI calls to `ai-calls.jsonl` without headers or API keys, ready for `import`. You can also write prompts by hand, starting from a template: [support bot](examples/support-bot.jsonl), [data extraction](examples/data-extraction.jsonl) or [summariser](examples/summariser.jsonl), 10 prompts each.
 
 Then set your provider key in the environment and run:
 
 ```
 export OPENAI_API_KEY=...        # or ANTHROPIC_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, ...
-node packages/scanner/dist/cli.js replay --set prompts.jsonl --old openai:gpt-4o --new openai:gpt-6-luna --runs 3
+npx ai-change-guard replay --set prompts.jsonl --old openai:gpt-4o --new openai:gpt-6-luna --runs 3
 ```
 
 Every prompt gets a verdict: same, changed, broken, or could not compare, with the reason. A spend cap (`--max-calls`, default 500) stops a run before it starts if it would make too many calls. Providers: OpenAI, Anthropic, Google Gemini, Groq, OpenRouter, Mistral and Ollama.
@@ -94,7 +92,7 @@ The skill finds every model ID and AI API in the code, looks each one up in the 
 OpenAI made Evals read-only on 31 October 2026 and shuts it down on 30 November, with no export button. The API still returns your evals until then, so save them now:
 
 ```sh
-OPENAI_API_KEY=sk-... node packages/scanner/dist/cli.js evals-export --out openai-evals --golden golden.jsonl
+OPENAI_API_KEY=sk-... npx ai-change-guard evals-export --out openai-evals --golden golden.jsonl
 ```
 
 It saves every eval with its graders, every run with its settings, each run's recorded calls (the exact messages sent, the model and its answer) and the dataset files you uploaded, one folder per eval. It only reads; nothing in your OpenAI account changes. Use a key of the project that owns the evals.
@@ -104,8 +102,8 @@ It saves every eval with its graders, every run with its settings, each run's re
 ## ai-stack.lock: your AI dependencies in one file
 
 ```sh
-node packages/scanner/dist/cli.js lock ./my-app           # writes my-app/ai-stack.lock; commit it
-node packages/scanner/dist/cli.js lock ./my-app --check   # exit code 1 when it no longer matches
+npx ai-change-guard lock ./my-app           # writes my-app/ai-stack.lock; commit it
+npx ai-change-guard lock ./my-app --check   # exit code 1 when it no longer matches
 ```
 
 The file lists each model with the files that use it, plus what the catalog said about it that day: retirement date, reroute, replacement, list price and announced price changes. It also lists deprecated AI APIs, AI packages with their versions, and the golden-set baselines (`*.baseline.json`) with the model each one verified. It records file names rather than line numbers and has no timestamp, so it only changes when the AI stack does.
@@ -119,7 +117,7 @@ The file lists each model with the files that use it, plus what the catalog said
 ## Money-Finder: a cheaper model that answers the same way
 
 ```sh
-node packages/scanner/dist/cli.js save --set golden.jsonl --model openai:gpt-5.5 --calls-per-month 100000
+npx ai-change-guard save --set golden.jsonl --model openai:gpt-5.5 --calls-per-month 100000
 ```
 
 ```
@@ -133,7 +131,7 @@ Without `--candidates`, it tests the two nearest cheaper models on the same prov
 ## Verified Prompt Slimming: a shorter system prompt, proved on your prompts
 
 ```sh
-node packages/scanner/dist/cli.js slim --set golden.jsonl --model openai:gpt-5.5 --calls-per-month 100000 --write .
+npx ai-change-guard slim --set golden.jsonl --model openai:gpt-5.5 --calls-per-month 100000 --write .
 ```
 
 ```
@@ -148,7 +146,7 @@ For each system prompt in the golden set (the most-used first, `--max-prompts 3`
 ## Backup models for an outage
 
 ```
-node packages/scanner/dist/cli.js fallback --set golden.jsonl --model openai:gpt-4o \
+npx ai-change-guard fallback --set golden.jsonl --model openai:gpt-4o \
   --candidates anthropic:claude-sonnet-5-5,google:gemini-3.1-flash-lite --format litellm --out litellm-config.yaml
 ```
 
@@ -159,7 +157,7 @@ Your model answers the golden set once; each candidate answers it too and is jud
 The scan reads `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `poetry.lock`, `uv.lock`, `Pipfile.lock`, `requirements*.txt` and `package.json`. It keeps only AI packages: SDKs, agent frameworks, MCP, vector stores and AI-sounding names. It then checks their exact versions against the releases in [`packages/catalog/data/packages.json`](packages/catalog/data/packages.json) that were published with malicious code. A match prints a HIGH finding with the advisory link, and the scan exits with code 1.
 
 ```sh
-node packages/scanner/dist/cli.js scan ./my-app --online
+npx ai-change-guard scan ./my-app --online
 ```
 
 `--online` adds three lookups:
@@ -175,8 +173,8 @@ It sends package names and versions only, never code. It skips packages from a p
 The scan lists announced price changes for the models in your code. To see the effect on your bill, give `cost` your real call volume: the [recorder](packages/recorder/README.md)'s `ai-calls.jsonl`, or the numbers yourself.
 
 ```sh
-node packages/scanner/dist/cli.js cost ./my-app --log ai-calls.jsonl            # add --sample 0.2 if the recorder kept 1 call in 5
-node packages/scanner/dist/cli.js cost --model gemini-3.8-flash --calls 50000 --input-tokens 1500 --output-tokens 400
+npx ai-change-guard cost ./my-app --log ai-calls.jsonl            # add --sample 0.2 if the recorder kept 1 call in 5
+npx ai-change-guard cost --model gemini-3.8-flash --calls 50000 --input-tokens 1500 --output-tokens 400
 ```
 
 ```
@@ -192,8 +190,8 @@ Estimates use list prices: no batch, cache or volume discounts. A log is scaled 
 After a replay passes, change every exact use of the old model ID:
 
 ```
-node packages/scanner/dist/cli.js switch ./my-app --from gpt-4o --to gpt-6-luna          # shows what would change
-node packages/scanner/dist/cli.js switch ./my-app --from gpt-4o --to gpt-6-luna --write  # changes the files
+npx ai-change-guard switch ./my-app --from gpt-4o --to gpt-6-luna          # shows what would change
+npx ai-change-guard switch ./my-app --from gpt-4o --to gpt-6-luna --write  # changes the files
 ```
 
 Only string literals and config values that are exactly the model ID change (a gateway prefix such as `openai/` is kept), so `gpt-4o` never touches `gpt-4o-mini`. Fine-tuned models, Bedrock IDs and Azure deployment names are listed for you to change by hand.
