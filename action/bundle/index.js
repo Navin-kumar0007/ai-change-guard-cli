@@ -32039,6 +32039,277 @@ function groupLockChanges(changes) {
   return groups.map((g) => ({ ...g, changes: changes.filter((c) => c.kind === g.kind) })).filter((g) => g.changes.length > 0);
 }
 
+// packages/scanner/dist/tokens.js
+var TOKEN_RULES = {
+  "no-output-limit": {
+    title: "No output limit on the AI call",
+    fix: "Set max_tokens / max_output_tokens to the longest answer you actually need.",
+    saving: "Caps runaway answers; output tokens usually cost several times more than input tokens."
+  },
+  "no-prompt-caching": {
+    title: "System prompt sent without prompt caching (Anthropic)",
+    fix: 'Add cache_control: {"type": "ephemeral"} to the fixed system prompt block.',
+    saving: "Cached input is billed at a fraction of the normal input price on repeat calls (check current Anthropic pricing)."
+  },
+  "cache-breaker": {
+    title: "Changing value inside the system prompt",
+    fix: "Move dates, times and IDs out of the system prompt and into the end of the user message.",
+    saving: "Keeps the prompt prefix identical so provider prompt caching can apply."
+  },
+  "loop-not-batched": {
+    title: "AI calls made one by one in a loop",
+    fix: "If results aren't needed instantly, send the loop through the provider's Batch API.",
+    saving: "Batch APIs are often around half price (confirm each provider's current discount)."
+  },
+  "json-without-structured-output": {
+    title: "JSON parsed from free-text AI output",
+    fix: "Ask for structured output (response_format / JSON schema / responseMimeType) instead of parsing text.",
+    saving: "Shorter answers and fewer retries when the JSON comes back broken."
+  }
+};
+var CALL_RE = /\b(?:chat\.completions\.create|responses\.create|messages\.(?:create|stream)|generate_?[cC]ontent|generateText|streamText)\s*\(/;
+var ANTHROPIC_CALL_RE = /\bmessages\.(?:create|stream)\s*\(/;
+var OUTPUT_LIMIT_RE = /\b(?:max_tokens|max_completion_tokens|max_output_tokens|maxTokens|maxOutputTokens|maxCompletionTokens)\b/;
+var SPREAD_RE = /\*\*\w|\.\.\.\w/;
+var SYSTEM_PARAM_RE = /\bsystem\s*[=:]/;
+var PROMPT_VAR_RE = /\b(?:system(?:_prompt|Prompt)?|instructions)\b\s*[=:]/;
+var CHANGING_VALUE_RE = /\b(?:datetime\.(?:now|utcnow)|date\.today|time\.time|Date\.now)\s*\(|\bnew Date\s*\(|\buuid\d?\s*\(/;
+var LOOP_RE = /^\s*(?:for\s|async for\s|while\s|for\s*\()|\.(?:map|forEach)\s*\(/;
+var FUNCTION_START_RE = /^\s*(?:def |async def |function |class |export )/;
+var JSON_PARSE_RE = /\b(?:json\.loads|JSON\.parse)\s*\(/;
+var AI_OUTPUT_RE = /\bchoices\s*\[|\boutput_text\b|\bmessage\.content\b|\.content\s*\[\s*\d+\s*\]\s*\.text\b|\bresponse\.text\b|\bcompletion\.text\b/;
+var EMPTY_ARGS_RE = /^\(\s*\)/;
+var TRIPLE_QUOTE_RE = /"""|'''/g;
+var STRUCTURED_RE = /\b(?:response_format|json_schema|responseMimeType|response_mime_type|responseSchema|response_schema|generateObject|zodResponseFormat|text_format|output_format|tool_choice)\b/;
+var COMMENT_LINE_RE2 = /^\s*(?:#|\/\/|\/\*|\*|--)/;
+function callBlock(lines, start, column) {
+  let depth = 0;
+  let quote = null;
+  const parts = [];
+  for (let i = start; i < lines.length && i < start + 80; i++) {
+    const text = i === start ? (lines[i] ?? "").slice(column) : lines[i] ?? "";
+    parts.push(text);
+    if (quote === "'" || quote === '"')
+      quote = null;
+    for (let j = 0; j < text.length; j++) {
+      const ch = text[j];
+      if (quote) {
+        if (ch === "\\")
+          j++;
+        else if (ch === quote)
+          quote = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`")
+        quote = ch;
+      else if (ch === "(")
+        depth++;
+      else if (ch === ")") {
+        depth--;
+        if (depth === 0)
+          return parts.join("\n");
+      }
+    }
+  }
+  return parts.join("\n");
+}
+function indentOf(line) {
+  return line.length - line.trimStart().length;
+}
+function insideLoop(lines, index, column) {
+  const line = lines[index] ?? "";
+  if (LOOP_RE.test(line.slice(0, column)))
+    return true;
+  const indent = indentOf(line);
+  for (let j = index - 1; j >= 0 && j >= index - 8; j--) {
+    const prev = lines[j] ?? "";
+    if (prev.trim() === "")
+      continue;
+    if (indentOf(prev) >= indent)
+      continue;
+    if (LOOP_RE.test(prev))
+      return true;
+    if (FUNCTION_START_RE.test(prev))
+      return false;
+  }
+  return false;
+}
+function findTokenTips(file, content, kind) {
+  if (kind !== "code")
+    return [];
+  const lines = content.split(/\r?\n/);
+  const tips = [];
+  const usesBatch = /batch/i.test(content);
+  const usesCacheControl = /cache_control|cacheControl/.test(content);
+  const usesStructuredOutput = STRUCTURED_RE.test(content);
+  let cacheTipGiven = false;
+  let jsonTipGiven = false;
+  let inDocstring = false;
+  lines.forEach((line, index) => {
+    const quoteCount = (line.match(TRIPLE_QUOTE_RE) ?? []).length;
+    const wasInDocstring = inDocstring;
+    if (quoteCount % 2 === 1)
+      inDocstring = !inDocstring;
+    if (wasInDocstring || quoteCount > 0 || COMMENT_LINE_RE2.test(line))
+      return;
+    const tip = (rule) => tips.push({ file, line: index + 1, rule, snippet: line.trim().slice(0, 160) });
+    const call = CALL_RE.exec(line);
+    if (call && !EMPTY_ARGS_RE.test(line.slice(call.index + call[0].length - 1))) {
+      const column = call.index + call[0].length - 1;
+      const block = callBlock(lines, index, column);
+      if (!OUTPUT_LIMIT_RE.test(block) && !SPREAD_RE.test(block))
+        tip("no-output-limit");
+      if (!usesCacheControl && !cacheTipGiven && ANTHROPIC_CALL_RE.test(line) && SYSTEM_PARAM_RE.test(block)) {
+        tip("no-prompt-caching");
+        cacheTipGiven = true;
+      }
+      if (!usesBatch && insideLoop(lines, index, call.index))
+        tip("loop-not-batched");
+    }
+    if (PROMPT_VAR_RE.test(line) && CHANGING_VALUE_RE.test(line))
+      tip("cache-breaker");
+    if (!usesStructuredOutput && !jsonTipGiven && JSON_PARSE_RE.test(line) && AI_OUTPUT_RE.test(line)) {
+      tip("json-without-structured-output");
+      jsonTipGiven = true;
+    }
+  });
+  return tips;
+}
+
+// packages/scanner/dist/requests.js
+var REQUEST_RULES = {
+  "claude-sampling-not-accepted": {
+    title: "Sampling setting this Claude model rejects",
+    severity: "breaks",
+    why: "Claude Opus 4.7 and later, every Claude 5 model and Fable accept only the default sampling: top_p, top_k or a temperature other than 1 returns a 400 error.",
+    fix: "Remove temperature, top_p and top_k from the call and steer the answer with the prompt instead.",
+    source: "https://platform.claude.com/docs/en/models/opus-5-5/migration-guide"
+  },
+  "claude-temperature-with-top-p": {
+    title: "temperature and top_p set together on Claude 4",
+    severity: "breaks",
+    why: "Claude 4 models return a 400 error when a request sets both temperature and top_p.",
+    fix: "Keep one of them (usually temperature) and remove the other.",
+    source: "https://platform.claude.com/docs/en/about-claude/models/migration-guide"
+  },
+  "anthropic-sampling-removed": {
+    title: "Sampling setting removed in Claude API version 2026-10-21",
+    severity: "upgrade",
+    why: "From API version 2026-10-21, which anthropic (Python) 2.0.0, @anthropic-ai/sdk 1.0.0 and the other new SDK majors send by default, any temperature, top_p or top_k returns a 400 error, even at its default value.",
+    fix: "Remove the setting before upgrading the Anthropic SDK; models that accept other values (Sonnet 4.6, Haiku 4.5) then sample with the defaults, so check those answers still work.",
+    source: "https://platform.claude.com/docs/en/api/migration-2026-10-21"
+  }
+};
+var ANTHROPIC_CALL_RE2 = /(?<!threads\.)\b(?:messages\.(?:with_raw_response\.|with_streaming_response\.)?(?:create|stream|parse)|batches\.create|Messages\.New|messages\(\)\.create)\s*\(/;
+var SAMPLING_RE = /(?<![\w.$])["']?(temperature|top_p|top_k|topP|topK|Temperature|TopP|TopK)["']?\s*[=:]\s*([^,\n)}]+)|\.(temperature|topP|topK)\s*\(\s*([^)\n]+)/g;
+var OMITTED_RE = /\b(?:NOT_GIVEN|NotGiven|omit|undefined|None|null|nil)\b/;
+var QUOTED_RE = /["'`]([^"'`\s]{4,120})["'`]/g;
+var STRING_RE2 = /"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g;
+var MODEL_NAME_RE = /\bmodel\s*[=:]\s*(?:[\w$]+\.)*([A-Za-z_$][\w$]*)\b/;
+var TRIPLE_QUOTE_RE2 = /"""|'''/g;
+function claudeVersion(id) {
+  const named = /^claude-(opus|sonnet|haiku|fable|mythos)-(\d{1,2})(?:-(\d{1,2}))?(?:[-@]\d{8})?(?:-|$)/.exec(id);
+  if (named) {
+    const [major, minor] = [Number(named[2]), Number(named[3] ?? 0)];
+    const newest = named[1] === "fable" || named[1] === "mythos" || major >= 5 || major === 4 && minor >= 7;
+    return { id, defaultsOnly: newest, claude4: major === 4 };
+  }
+  return /^claude-\d/.test(id) ? { id, defaultsOnly: false, claude4: false } : null;
+}
+function claudeIds(text) {
+  const out = [];
+  for (const m of text.matchAll(QUOTED_RE)) {
+    const hit = classifyModelId(m[1]);
+    const v = hit?.provider === "anthropic" ? claudeVersion(hit.id) : null;
+    if (v)
+      out.push(v);
+  }
+  return out;
+}
+function modelOf(block, content) {
+  let ids = claudeIds(block);
+  if (ids.length === 0) {
+    const name = MODEL_NAME_RE.exec(block)?.[1];
+    if (name && name !== "model") {
+      const def = new RegExp(`(?:^|[\\s,(])${name.replace(/\$/g, "\\$")}\\s*(?::\\s*[\\w\\[\\]|]+\\s*)?=\\s*(["'\`][^"'\`\\n]+["'\`])`, "m").exec(content);
+      if (def)
+        ids = claudeIds(def[1]);
+    }
+  }
+  return ids.find((v) => v.defaultsOnly) ?? ids.find((v) => v.claude4) ?? ids[0] ?? null;
+}
+var NAME = { temperature: "temperature", top_p: "top_p", top_k: "top_k", topp: "top_p", topk: "top_k" };
+function isDefaultTemperature(value) {
+  return /^(?:[\w.]+\(\s*)?1(?:\.0*)?\s*\)?$/.test(value.trim());
+}
+function settingsIn(block) {
+  const code3 = block.split("\n").filter((l) => !COMMENT_LINE_RE2.test(l)).join("\n").replace(STRING_RE2, (str) => /\s/.test(str) ? '""' : str);
+  const set = /* @__PURE__ */ new Map();
+  for (const m of code3.matchAll(SAMPLING_RE)) {
+    const name = NAME[(m[1] ?? m[3] ?? "").toLowerCase()];
+    const value = (m[2] ?? m[4] ?? "").trim();
+    if (name && !set.has(name) && !OMITTED_RE.test(value))
+      set.set(name, value);
+  }
+  return set;
+}
+function findRequestIssues(file, content, kind) {
+  if (kind !== "code" || !/anthropic/i.test(content))
+    return [];
+  const lines = content.split(/\r?\n/);
+  const out = [];
+  let inDocstring = false;
+  lines.forEach((line, index) => {
+    const quotes = (line.match(TRIPLE_QUOTE_RE2) ?? []).length;
+    const wasInDocstring = inDocstring;
+    if (quotes % 2 === 1)
+      inDocstring = !inDocstring;
+    if (wasInDocstring || quotes > 0 || COMMENT_LINE_RE2.test(line))
+      return;
+    const call = ANTHROPIC_CALL_RE2.exec(line);
+    if (!call)
+      return;
+    const block = callBlock(lines, index, call.index + call[0].length - 1);
+    const set = settingsIn(block);
+    if (set.size === 0)
+      return;
+    const model = modelOf(block, content);
+    const settings = [...set].map(([k, v]) => `${k}=${v.slice(0, 30)}`).join(", ");
+    const add = (rule, detail) => out.push({ file, line: index + 1, rule, detail });
+    const temperature = set.get("temperature");
+    const nonDefault = set.has("top_p") || set.has("top_k") || temperature !== void 0 && !isDefaultTemperature(temperature);
+    if (model?.defaultsOnly && nonDefault)
+      add("claude-sampling-not-accepted", `${model.id} with ${settings}`);
+    else if (model?.claude4 && set.has("temperature") && set.has("top_p"))
+      add("claude-temperature-with-top-p", `${model.id} with ${settings}`);
+    else
+      add("anthropic-sampling-removed", model ? `${model.id} with ${settings}` : settings);
+  });
+  return out;
+}
+var NEW_VERSION_SDKS = [
+  { ecosystem: "PyPI", name: "anthropic", major: 2 },
+  { ecosystem: "npm", name: "@anthropic-ai/sdk", major: 1 }
+];
+function ecosystemOf(file) {
+  if (/\.pyi?$/.test(file))
+    return "PyPI";
+  if (/\.(?:[cm]?[jt]sx?)$/.test(file))
+    return "npm";
+  return void 0;
+}
+function sdkOnNewApiVersion(deps, ecosystem) {
+  if (!ecosystem)
+    return void 0;
+  for (const d of deps) {
+    const sdk = NEW_VERSION_SDKS.find((s) => s.ecosystem === ecosystem && d.ecosystem === ecosystem && s.name === d.name.toLowerCase());
+    const major = d.version ? Number(/^v?(\d+)\./.exec(d.version)?.[1]) : NaN;
+    if (sdk && major >= sdk.major)
+      return `${d.name} ${d.version} (${d.file})`;
+  }
+  return void 0;
+}
+
 // packages/scanner/dist/security.js
 import { basename as basename3 } from "node:path";
 
@@ -32410,7 +32681,7 @@ function looksReal(key) {
   return new Set(body).size >= 12 && /\d/.test(body) && /[A-Za-z]/.test(body);
 }
 var mask = (key) => `${key.slice(0, 4)}\u2026`;
-var AI_OUTPUT_RE = /\bchoices\s*\[\s*\d+\s*\]\s*\.(?:message|text)\b|\boutput_text\b|\.content\s*\[\s*\d+\s*\]\s*\.text\b|\b(?:response|result|resp|res|completion|answer|output)\.text\b(?!\s*\()|\.response\.text\s*\(\s*\)/;
+var AI_OUTPUT_RE2 = /\bchoices\s*\[\s*\d+\s*\]\s*\.(?:message|text)\b|\boutput_text\b|\.content\s*\[\s*\d+\s*\]\s*\.text\b|\b(?:response|result|resp|res|completion|answer|output)\.text\b(?!\s*\()|\.response\.text\s*\(\s*\)/;
 var ASSIGN_RE = /^\s*(?:(?:const|let|var|final)\s+)?([A-Za-z_$][\w$]*)\s*(?::\s*[\w[\]|<> ]+)?\s*=(?!=)/;
 var SINKS = [
   { name: "eval/exec", re: /(?<![\w.])(?:eval|exec)\s*\(|\bnew\s+Function\s*\(/ },
@@ -32554,7 +32825,7 @@ function mcpFindings(file, content, lines) {
   }
   return out;
 }
-var COMMENT_LINE_RE2 = /^\s*(?:#|\/\/|\/\*|\*|--)/;
+var COMMENT_LINE_RE3 = /^\s*(?:#|\/\/|\/\*|\*|--)/;
 function findSecurityIssues(file, content, kind) {
   const lines = content.split(/\r?\n/);
   const out = [];
@@ -32582,10 +32853,10 @@ function findSecurityIssues(file, content, kind) {
     return out.sort((a, b) => a.line - b.line);
   const fromModel = /* @__PURE__ */ new Set();
   lines.forEach((line, i) => {
-    if (COMMENT_LINE_RE2.test(line))
+    if (COMMENT_LINE_RE3.test(line))
       return;
     const assigned = ASSIGN_RE.exec(line)?.[1];
-    const direct = AI_OUTPUT_RE.test(line);
+    const direct = AI_OUTPUT_RE2.test(line);
     const rhs = line.slice(line.indexOf("=") + 1);
     if (assigned && !PARSED_RE.test(rhs) && (direct || [...fromModel].some((v) => usesVar(rhs, v))))
       fromModel.add(assigned);
@@ -32594,10 +32865,10 @@ function findSecurityIssues(file, content, kind) {
       if (!hit)
         continue;
       const scope = sink.name === "SQL" ? firstArgument(line, hit.index + hit[0].length) : line;
-      if (sink.name === "SQL" && !AI_OUTPUT_RE.test(scope) && ![...fromModel].some((v) => usesVar(scope, v)))
+      if (sink.name === "SQL" && !AI_OUTPUT_RE2.test(scope) && ![...fromModel].some((v) => usesVar(scope, v)))
         continue;
-      const via = AI_OUTPUT_RE.test(scope) ? null : [...fromModel].find((v) => usesVar(scope, v));
-      if (AI_OUTPUT_RE.test(scope) || via) {
+      const via = AI_OUTPUT_RE2.test(scope) ? null : [...fromModel].find((v) => usesVar(scope, v));
+      if (AI_OUTPUT_RE2.test(scope) || via) {
         add(i, "model-output-to-sink", `${via ? `\`${via}\` (from the model's answer)` : "the model's answer"} goes to ${sink.name}`);
         break;
       }
@@ -32633,130 +32904,6 @@ function findSecurityIssues(file, content, kind) {
   return out.sort((a, b) => a.line - b.line);
 }
 
-// packages/scanner/dist/tokens.js
-var TOKEN_RULES = {
-  "no-output-limit": {
-    title: "No output limit on the AI call",
-    fix: "Set max_tokens / max_output_tokens to the longest answer you actually need.",
-    saving: "Caps runaway answers; output tokens usually cost several times more than input tokens."
-  },
-  "no-prompt-caching": {
-    title: "System prompt sent without prompt caching (Anthropic)",
-    fix: 'Add cache_control: {"type": "ephemeral"} to the fixed system prompt block.',
-    saving: "Cached input is billed at a fraction of the normal input price on repeat calls (check current Anthropic pricing)."
-  },
-  "cache-breaker": {
-    title: "Changing value inside the system prompt",
-    fix: "Move dates, times and IDs out of the system prompt and into the end of the user message.",
-    saving: "Keeps the prompt prefix identical so provider prompt caching can apply."
-  },
-  "loop-not-batched": {
-    title: "AI calls made one by one in a loop",
-    fix: "If results aren't needed instantly, send the loop through the provider's Batch API.",
-    saving: "Batch APIs are often around half price (confirm each provider's current discount)."
-  },
-  "json-without-structured-output": {
-    title: "JSON parsed from free-text AI output",
-    fix: "Ask for structured output (response_format / JSON schema / responseMimeType) instead of parsing text.",
-    saving: "Shorter answers and fewer retries when the JSON comes back broken."
-  }
-};
-var CALL_RE = /\b(?:chat\.completions\.create|responses\.create|messages\.(?:create|stream)|generate_?[cC]ontent|generateText|streamText)\s*\(/;
-var ANTHROPIC_CALL_RE = /\bmessages\.(?:create|stream)\s*\(/;
-var OUTPUT_LIMIT_RE = /\b(?:max_tokens|max_completion_tokens|max_output_tokens|maxTokens|maxOutputTokens|maxCompletionTokens)\b/;
-var SPREAD_RE = /\*\*\w|\.\.\.\w/;
-var SYSTEM_PARAM_RE = /\bsystem\s*[=:]/;
-var PROMPT_VAR_RE = /\b(?:system(?:_prompt|Prompt)?|instructions)\b\s*[=:]/;
-var CHANGING_VALUE_RE = /\b(?:datetime\.(?:now|utcnow)|date\.today|time\.time|Date\.now)\s*\(|\bnew Date\s*\(|\buuid\d?\s*\(/;
-var LOOP_RE = /^\s*(?:for\s|async for\s|while\s|for\s*\()|\.(?:map|forEach)\s*\(/;
-var FUNCTION_START_RE = /^\s*(?:def |async def |function |class |export )/;
-var JSON_PARSE_RE = /\b(?:json\.loads|JSON\.parse)\s*\(/;
-var AI_OUTPUT_RE2 = /\bchoices\s*\[|\boutput_text\b|\bmessage\.content\b|\.content\s*\[\s*\d+\s*\]\s*\.text\b|\bresponse\.text\b|\bcompletion\.text\b/;
-var EMPTY_ARGS_RE = /^\(\s*\)/;
-var TRIPLE_QUOTE_RE = /"""|'''/g;
-var STRUCTURED_RE = /\b(?:response_format|json_schema|responseMimeType|response_mime_type|responseSchema|response_schema|generateObject|zodResponseFormat|text_format|output_format|tool_choice)\b/;
-var COMMENT_LINE_RE3 = /^\s*(?:#|\/\/|\/\*|\*|--)/;
-function callBlock(lines, start, column) {
-  let depth = 0;
-  const parts = [];
-  for (let i = start; i < lines.length && i < start + 40; i++) {
-    const text = i === start ? (lines[i] ?? "").slice(column) : lines[i] ?? "";
-    parts.push(text);
-    for (const ch of text) {
-      if (ch === "(")
-        depth++;
-      else if (ch === ")") {
-        depth--;
-        if (depth === 0)
-          return parts.join("\n");
-      }
-    }
-  }
-  return parts.join("\n");
-}
-function indentOf(line) {
-  return line.length - line.trimStart().length;
-}
-function insideLoop(lines, index, column) {
-  const line = lines[index] ?? "";
-  if (LOOP_RE.test(line.slice(0, column)))
-    return true;
-  const indent = indentOf(line);
-  for (let j = index - 1; j >= 0 && j >= index - 8; j--) {
-    const prev = lines[j] ?? "";
-    if (prev.trim() === "")
-      continue;
-    if (indentOf(prev) >= indent)
-      continue;
-    if (LOOP_RE.test(prev))
-      return true;
-    if (FUNCTION_START_RE.test(prev))
-      return false;
-  }
-  return false;
-}
-function findTokenTips(file, content, kind) {
-  if (kind !== "code")
-    return [];
-  const lines = content.split(/\r?\n/);
-  const tips = [];
-  const usesBatch = /batch/i.test(content);
-  const usesCacheControl = /cache_control|cacheControl/.test(content);
-  const usesStructuredOutput = STRUCTURED_RE.test(content);
-  let cacheTipGiven = false;
-  let jsonTipGiven = false;
-  let inDocstring = false;
-  lines.forEach((line, index) => {
-    const quoteCount = (line.match(TRIPLE_QUOTE_RE) ?? []).length;
-    const wasInDocstring = inDocstring;
-    if (quoteCount % 2 === 1)
-      inDocstring = !inDocstring;
-    if (wasInDocstring || quoteCount > 0 || COMMENT_LINE_RE3.test(line))
-      return;
-    const tip = (rule) => tips.push({ file, line: index + 1, rule, snippet: line.trim().slice(0, 160) });
-    const call = CALL_RE.exec(line);
-    if (call && !EMPTY_ARGS_RE.test(line.slice(call.index + call[0].length - 1))) {
-      const column = call.index + call[0].length - 1;
-      const block = callBlock(lines, index, column);
-      if (!OUTPUT_LIMIT_RE.test(block) && !SPREAD_RE.test(block))
-        tip("no-output-limit");
-      if (!usesCacheControl && !cacheTipGiven && ANTHROPIC_CALL_RE.test(line) && SYSTEM_PARAM_RE.test(block)) {
-        tip("no-prompt-caching");
-        cacheTipGiven = true;
-      }
-      if (!usesBatch && insideLoop(lines, index, call.index))
-        tip("loop-not-batched");
-    }
-    if (PROMPT_VAR_RE.test(line) && CHANGING_VALUE_RE.test(line))
-      tip("cache-breaker");
-    if (!usesStructuredOutput && !jsonTipGiven && JSON_PARSE_RE.test(line) && AI_OUTPUT_RE2.test(line)) {
-      tip("json-without-structured-output");
-      jsonTipGiven = true;
-    }
-  });
-  return tips;
-}
-
 // packages/scanner/dist/scan.js
 var MAX_FILE_BYTES2 = 1e6;
 var MAX_LOCKFILE_BYTES = 3e7;
@@ -32765,7 +32912,7 @@ async function scanDirectory(root) {
   if (!info?.isDirectory())
     throw new Error(`Not a folder: ${root}`);
   const rules = compileApiRules(apis);
-  const result = { root, filesScanned: 0, aiFiles: 0, callSites: 0, findings: [], tokenTips: [], security: [], dependencies: [], baselines: [], mcpServers: [] };
+  const result = { root, filesScanned: 0, aiFiles: 0, callSites: 0, findings: [], tokenTips: [], security: [], requests: [], dependencies: [], baselines: [], mcpServers: [] };
   const ownPackages = /* @__PURE__ */ new Set();
   for await (const file of walk(root)) {
     const size = (await stat2(file.path)).size;
@@ -32801,6 +32948,8 @@ async function scanDirectory(root) {
     if (scanned.isAiFile)
       result.tokenTips.push(...findTokenTips(file.rel, content, file.kind));
     result.security.push(...findSecurityIssues(file.rel, content, file.kind));
+    if (scanned.isAiFile)
+      result.requests.push(...findRequestIssues(file.rel, content, file.kind));
     if (isMcpConfig(file.rel, content, file.kind))
       result.mcpServers.push(...parseMcpServers(file.rel, content));
   }
@@ -33052,6 +33201,20 @@ function buildReport(result, target, today) {
     row.findings.push({ location: `${f.file}:${f.line}`, detail: f.detail });
   }
   const security = [...securityRows.values()].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || b.findings.length - a.findings.length);
+  const requestRows = /* @__PURE__ */ new Map();
+  for (const f of result.requests ?? []) {
+    let row = requestRows.get(f.rule);
+    if (!row) {
+      row = { rule: f.rule, ...REQUEST_RULES[f.rule], findings: [] };
+      requestRows.set(f.rule, row);
+    }
+    const sdk = f.rule === "anthropic-sampling-removed" ? sdkOnNewApiVersion(result.dependencies ?? [], ecosystemOf(f.file)) : void 0;
+    row.findings.push({ location: `${f.file}:${f.line}`, detail: f.detail, ...sdk ? { sdk } : {} });
+    if (sdk)
+      row.sdk ??= sdk;
+  }
+  const breaksNow = (r) => r.severity === "breaks" || Boolean(r.sdk);
+  const requests = [...requestRows.values()].sort((a, b) => Number(breaksNow(b)) - Number(breaksNow(a)) || b.findings.length - a.findings.length);
   const costs = costRowsFor(models2, today);
   const aiPackages = aiPackagesOf(result.dependencies ?? []);
   const report = {
@@ -33065,6 +33228,7 @@ function buildReport(result, target, today) {
     apis: apiRows,
     tokenTips,
     security,
+    requests,
     costs,
     aiPackages,
     packages: sortPackageRows(checkPackagesOffline(aiPackages)),
@@ -33106,19 +33270,24 @@ function buildCheck(report, changedFiles) {
   const introducedKey = Boolean(keyRow && inChangedFiles(keyRow.findings.map((f) => f.location), changed));
   const compromised = (report.packages ?? []).filter((p) => p.issue === "compromised");
   const introducedPackage = compromised.some((p) => inChangedFiles(p.locations, changed));
-  const conclusion = introducedDead || introducedKey || introducedPackage ? "failure" : compromised.length > 0 ? "neutral" : dead.length + deadApis.length + soon.length + soonApis.length > 0 ? "neutral" : "success";
+  const breakingNow = (report.requests ?? []).flatMap((r) => r.findings.filter((f) => r.severity === "breaks" || f.sdk).map((f) => f.location));
+  const introducedRequest = inChangedFiles(breakingNow, changed);
+  const conclusion = introducedDead || introducedKey || introducedPackage || introducedRequest ? "failure" : compromised.length > 0 || breakingNow.length > 0 ? "neutral" : dead.length + deadApis.length + soon.length + soonApis.length > 0 ? "neutral" : "success";
   const parts = [];
   if (dead.length + deadApis.length > 0)
     parts.push(`${dead.length + deadApis.length} retired`);
   if (soon.length + soonApis.length > 0)
     parts.push(`${soon.length + soonApis.length} changing within ${SOON_DAYS} days`);
   const modelTitle = parts.length > 0 ? `AI models and APIs: ${parts.join(", ")}` : `${report.models.length} AI models found, none changing soon`;
-  const title = introducedKey ? `AI API key exposed in this pull request \xB7 ${modelTitle}` : compromised.length > 0 ? `Malicious AI package release installed \xB7 ${modelTitle}` : modelTitle;
+  const requestTitle = breakingNow.length > 0 ? ` \xB7 ${breakingNow.length} Claude call${breakingNow.length === 1 ? "" : "s"} with settings that return an error` : "";
+  const title = (introducedKey ? `AI API key exposed in this pull request \xB7 ${modelTitle}` : compromised.length > 0 ? `Malicious AI package release installed \xB7 ${modelTitle}` : modelTitle) + requestTitle;
   const lines = [];
   if (introducedKey)
     lines.push("**This pull request adds or touches a file with an exposed AI API key. Revoke the key and move it to a server-side secret.**", "");
   if (introducedDead)
     lines.push("**This pull request touches code that uses a retired AI model or API.**", "");
+  if (introducedRequest)
+    lines.push("**This pull request touches a Claude call whose settings return an error (see Request settings that break).**", "");
   if (compromised.length > 0) {
     lines.push(`**${introducedPackage ? "This pull request installs" : "This repository installs"} an AI package release that was published with malicious code.** ${PACKAGE_FIX.compromised}`);
     for (const p of compromised)
@@ -33144,6 +33313,14 @@ function buildCheck(report, changedFiles) {
     lines.push("", "**Price changes** (advisory):");
     for (const c of costs)
       lines.push(`- ${describeCost(c)}`);
+  }
+  if (report.requests?.length) {
+    lines.push("", "**Request settings that break:**");
+    for (const r of report.requests) {
+      const where = r.findings.slice(0, 3).map((f) => `\`${f.location}\` (${f.detail})`).join(", ") + (r.findings.length > 3 ? ` +${r.findings.length - 3} more` : "");
+      const when = r.severity === "breaks" ? "**Breaks now:** " : r.sdk ? `**Breaks now** where ${r.sdk} is used (it sends API version 2026-10-21): ` : "**Breaks on SDK upgrade:** ";
+      lines.push(`- ${when}${r.title}: ${where}. ${r.fix} ([source](${r.source}))`);
+    }
   }
   if (report.security?.length) {
     lines.push("", "**AI security check** (advisory):");

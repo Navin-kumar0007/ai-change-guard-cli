@@ -99,6 +99,7 @@ export function createServer(options: ServerOptions = {}): McpServer {
         scan.findings = scan.findings.map((f) => ({ ...f, file: fix(f.file) }));
         scan.tokenTips = scan.tokenTips.map((t) => ({ ...t, file: fix(t.file) }));
         scan.security = scan.security.map((s) => ({ ...s, file: fix(s.file) }));
+        scan.requests = (scan.requests ?? []).map((r) => ({ ...r, file: fix(r.file) }));
         const report = buildReport(scan, prefix || ".", today());
         const summary = report.models.map((m) => ({
           model: m.id,
@@ -111,9 +112,10 @@ export function createServer(options: ServerOptions = {}): McpServer {
           locations: m.locations,
         }));
         const security = (report.security ?? []).map((s) => ({ rule: s.rule, title: s.title, owasp: s.owasp, severity: s.severity, fix: s.fix, findings: s.findings }));
+        const requests = (report.requests ?? []).map((r) => ({ rule: r.rule, title: r.title, severity: r.severity, sdk: r.sdk, fix: r.fix, source: r.source, findings: r.findings }));
         return text(
           formatText(report),
-          JSON.stringify({ models: summary, apis: report.apis, security, dynamicModelIds: report.dynamic.map((d) => d.location) }, null, 2),
+          JSON.stringify({ models: summary, apis: report.apis, security, requests, dynamicModelIds: report.dynamic.map((d) => d.location) }, null, 2),
         );
       } catch (error) {
         return fail(`Scan failed: ${error instanceof Error ? error.message : String(error)}`);

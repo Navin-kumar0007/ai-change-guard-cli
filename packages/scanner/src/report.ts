@@ -15,6 +15,7 @@ import { buildCostRows, describeCost, formatPrice, type CostRow } from "./costs.
 import { buildLock, compareLock, formatLockChanges, LOCK_FILE, LockError, parseLock, type AiStackLock, type LockChange, type LockedBaseline } from "./lock.js";
 import { aiPackagesOf, checkPackagesOffline, checkPackagesOnline, describePackage, NEW_PACKAGE_DAYS, PACKAGE_FIX, sortPackageRows, type AiPackage, type OnlineOptions, type PackageRow } from "./packages.js";
 import type { ScanResult } from "./scan.js";
+import { ecosystemOf, REQUEST_RULES, sdkOnNewApiVersion, type RequestRule } from "./requests.js";
 import { SECURITY_RULES, type SecurityRule } from "./security.js";
 import { TOKEN_RULES, type TokenRule } from "./tokens.js";
 
@@ -26,6 +27,20 @@ export interface SecurityRow {
   why: string;
   fix: string;
   findings: { location: string; detail: string }[];
+}
+
+export interface RequestRow {
+  rule: RequestRule;
+  title: string;
+  /** "breaks": a 400 error today. "upgrade": a 400 error once the SDK sends API version 2026-10-21 (or now, see sdk). */
+  severity: "breaks" | "upgrade";
+  why: string;
+  fix: string;
+  source: string;
+  /** A pinned SDK release that already sends 2026-10-21: the findings marked with it break today. */
+  sdk?: string;
+  /** sdk: set on a finding whose language's pinned SDK already sends 2026-10-21. */
+  findings: { location: string; detail: string; sdk?: string }[];
 }
 
 export interface TokenTipRow {
@@ -83,6 +98,8 @@ export interface Report {
   tokenTips: TokenTipRow[];
   /** AI Security Check (advisory). Missing in reports stored before it existed. */
   security?: SecurityRow[];
+  /** Request settings a Claude model or API version rejects. Missing in reports stored before it existed. */
+  requests?: RequestRow[];
   /** Cost Change Guard: announced price changes for the models found. Missing in older stored reports. */
   costs?: CostRow[];
   /** AI package guard: the AI packages the project installs, and problems found with them. */
@@ -312,6 +329,21 @@ export function buildReport(result: ScanResult, target: string, today: string): 
   }
   const security = [...securityRows.values()].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || b.findings.length - a.findings.length);
 
+  const requestRows = new Map<RequestRule, RequestRow>();
+  for (const f of result.requests ?? []) {
+    let row = requestRows.get(f.rule);
+    if (!row) {
+      row = { rule: f.rule, ...REQUEST_RULES[f.rule], findings: [] };
+      requestRows.set(f.rule, row);
+    }
+    // The version rule breaks today where this file's language already pins an SDK that sends 2026-10-21.
+    const sdk = f.rule === "anthropic-sampling-removed" ? sdkOnNewApiVersion(result.dependencies ?? [], ecosystemOf(f.file)) : undefined;
+    row.findings.push({ location: `${f.file}:${f.line}`, detail: f.detail, ...(sdk ? { sdk } : {}) });
+    if (sdk) row.sdk ??= sdk;
+  }
+  const breaksNow = (r: RequestRow) => r.severity === "breaks" || Boolean(r.sdk);
+  const requests = [...requestRows.values()].sort((a, b) => Number(breaksNow(b)) - Number(breaksNow(a)) || b.findings.length - a.findings.length);
+
   const costs = costRowsFor(models, today);
   const aiPackages = aiPackagesOf(result.dependencies ?? []);
 
@@ -326,6 +358,7 @@ export function buildReport(result: ScanResult, target: string, today: string): 
     apis: apiRows,
     tokenTips,
     security,
+    requests,
     costs,
     aiPackages,
     packages: sortPackageRows(checkPackagesOffline(aiPackages)),
@@ -389,7 +422,7 @@ export function formatText(report: Report): string {
     out.push("No AI model IDs found in code or config.");
     out.push("If this app uses AI, the model may be set in a database, a dashboard or a gateway config. Check there.");
     // Security findings (an exposed key, an unpinned MCP server) matter even without model IDs.
-    if (!report.security?.length && !report.aiPackages?.length) return out.join("\n");
+    if (!report.security?.length && !report.aiPackages?.length && !report.requests?.length) return out.join("\n");
     out.push("");
   }
 
@@ -441,6 +474,22 @@ export function formatText(report: Report): string {
       out.push(`  ${t.title}  ${whereLabel(t.locations)}`);
       out.push(`    fix: ${t.fix}`);
       out.push(`    why: ${t.saving}`);
+    }
+    out.push("");
+  }
+
+  if (report.requests?.length) {
+    out.push("Request settings that break");
+    for (const r of report.requests) {
+      const some = Boolean(r.sdk) && r.findings.some((f) => !f.sdk);
+      const label =
+        r.severity === "breaks" ? "BREAKS NOW" : r.sdk ? `BREAKS NOW${some ? " in the marked calls" : ""} (${r.sdk} sends API version 2026-10-21)` : "BREAKS ON SDK UPGRADE";
+      out.push(`  ${label}  ${r.title}`);
+      for (const f of r.findings.slice(0, 10)) out.push(`    ${f.location}  ${f.detail}${some && f.sdk ? "  <- breaks now" : ""}`);
+      if (r.findings.length > 10) out.push(`    ... and ${r.findings.length - 10} more`);
+      out.push(`    why: ${r.why}`);
+      out.push(`    fix: ${r.fix}`);
+      out.push(`    source: ${r.source}`);
     }
     out.push("");
   }

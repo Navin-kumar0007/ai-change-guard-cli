@@ -5,6 +5,7 @@ import { compileApiRules, scanText, type Finding } from "./detect.js";
 import { isDependencyFile, lineOf, ownPackageName, parseDependencies, privateRegistries, type Dependency } from "./deps.js";
 import { isAiRelated } from "./packages.js";
 import { LOCK_FILE, parseBaselineSummary, type LockedBaseline } from "./lock.js";
+import { findRequestIssues, type RequestFinding } from "./requests.js";
 import { findSecurityIssues, isMcpConfig, parseMcpServers, type SecurityFinding } from "./security.js";
 import type { McpServerConfig } from "./mcp-tools.js";
 import { findTokenTips, type TokenTip } from "./tokens.js";
@@ -22,6 +23,8 @@ export interface ScanResult {
   findings: Finding[];
   tokenTips: TokenTip[];
   security: SecurityFinding[];
+  /** Request settings a Claude model or API version rejects (missing in results made before this check). */
+  requests?: RequestFinding[];
   /** AI-related dependencies from manifests and lockfiles (missing in results made before the package guard). */
   dependencies?: Dependency[];
   /** Golden-set baselines (*.baseline.json) found in the folder. */
@@ -37,7 +40,7 @@ export async function scanDirectory(root: string): Promise<ScanResult> {
   if (!info?.isDirectory()) throw new Error(`Not a folder: ${root}`);
 
   const rules = compileApiRules(apis);
-  const result: ScanResult = { root, filesScanned: 0, aiFiles: 0, callSites: 0, findings: [], tokenTips: [], security: [], dependencies: [], baselines: [], mcpServers: [] };
+  const result: ScanResult = { root, filesScanned: 0, aiFiles: 0, callSites: 0, findings: [], tokenTips: [], security: [], requests: [], dependencies: [], baselines: [], mcpServers: [] };
 
   const ownPackages = new Set<string>();
   for await (const file of walk(root)) {
@@ -71,6 +74,7 @@ export async function scanDirectory(root: string): Promise<ScanResult> {
     result.findings.push(...scanned.findings);
     if (scanned.isAiFile) result.tokenTips.push(...findTokenTips(file.rel, content, file.kind));
     result.security.push(...findSecurityIssues(file.rel, content, file.kind));
+    if (scanned.isAiFile) result.requests!.push(...findRequestIssues(file.rel, content, file.kind));
     if (isMcpConfig(file.rel, content, file.kind)) result.mcpServers!.push(...parseMcpServers(file.rel, content));
   }
   // The repo's own workspace packages are not installed from a registry.

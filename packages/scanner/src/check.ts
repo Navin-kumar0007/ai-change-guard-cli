@@ -43,22 +43,34 @@ export function buildCheck(report: Report, changedFiles: string[] | null): Check
   // A malicious AI package release fails the check when this pull request touches the file that installs it.
   const compromised = (report.packages ?? []).filter((p) => p.issue === "compromised");
   const introducedPackage = compromised.some((p) => inChangedFiles(p.locations, changed));
+  // Request settings that already return a 400: fail when this pull request touches one, otherwise ask for a look.
+  const breakingNow = (report.requests ?? []).flatMap((r) => r.findings.filter((f) => r.severity === "breaks" || f.sdk).map((f) => f.location));
+  const introducedRequest = inChangedFiles(breakingNow, changed);
   const conclusion: Conclusion =
-    introducedDead || introducedKey || introducedPackage ? "failure" : compromised.length > 0 ? "neutral" : dead.length + deadApis.length + soon.length + soonApis.length > 0 ? "neutral" : "success";
+    introducedDead || introducedKey || introducedPackage || introducedRequest
+      ? "failure"
+      : compromised.length > 0 || breakingNow.length > 0
+        ? "neutral"
+        : dead.length + deadApis.length + soon.length + soonApis.length > 0
+          ? "neutral"
+          : "success";
 
   const parts: string[] = [];
   if (dead.length + deadApis.length > 0) parts.push(`${dead.length + deadApis.length} retired`);
   if (soon.length + soonApis.length > 0) parts.push(`${soon.length + soonApis.length} changing within ${SOON_DAYS} days`);
   const modelTitle = parts.length > 0 ? `AI models and APIs: ${parts.join(", ")}` : `${report.models.length} AI models found, none changing soon`;
-  const title = introducedKey
-    ? `AI API key exposed in this pull request · ${modelTitle}`
-    : compromised.length > 0
-      ? `Malicious AI package release installed · ${modelTitle}`
-      : modelTitle;
+  const requestTitle = breakingNow.length > 0 ? ` · ${breakingNow.length} Claude call${breakingNow.length === 1 ? "" : "s"} with settings that return an error` : "";
+  const title =
+    (introducedKey
+      ? `AI API key exposed in this pull request · ${modelTitle}`
+      : compromised.length > 0
+        ? `Malicious AI package release installed · ${modelTitle}`
+        : modelTitle) + requestTitle;
 
   const lines: string[] = [];
   if (introducedKey) lines.push("**This pull request adds or touches a file with an exposed AI API key. Revoke the key and move it to a server-side secret.**", "");
   if (introducedDead) lines.push("**This pull request touches code that uses a retired AI model or API.**", "");
+  if (introducedRequest) lines.push("**This pull request touches a Claude call whose settings return an error (see Request settings that break).**", "");
   if (compromised.length > 0) {
     lines.push(`**${introducedPackage ? "This pull request installs" : "This repository installs"} an AI package release that was published with malicious code.** ${PACKAGE_FIX.compromised}`);
     for (const p of compromised) lines.push(`- ${describePackage(p)} (${p.locations.slice(0, 3).map((l) => `\`${l}\``).join(", ")})${p.url ? ` [advisory](${p.url})` : ""}`);
@@ -82,6 +94,14 @@ export function buildCheck(report: Report, changedFiles: string[] | null): Check
   if (costs.length > 0) {
     lines.push("", "**Price changes** (advisory):");
     for (const c of costs) lines.push(`- ${describeCost(c)}`);
+  }
+  if (report.requests?.length) {
+    lines.push("", "**Request settings that break:**");
+    for (const r of report.requests) {
+      const where = r.findings.slice(0, 3).map((f) => `\`${f.location}\` (${f.detail})`).join(", ") + (r.findings.length > 3 ? ` +${r.findings.length - 3} more` : "");
+      const when = r.severity === "breaks" ? "**Breaks now:** " : r.sdk ? `**Breaks now** where ${r.sdk} is used (it sends API version 2026-10-21): ` : "**Breaks on SDK upgrade:** ";
+      lines.push(`- ${when}${r.title}: ${where}. ${r.fix} ([source](${r.source}))`);
+    }
   }
   if (report.security?.length) {
     lines.push("", "**AI security check** (advisory):");

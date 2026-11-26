@@ -59,16 +59,31 @@ const EMPTY_ARGS_RE = /^\(\s*\)/;
 const TRIPLE_QUOTE_RE = /"""|'''/g;
 const STRUCTURED_RE =
   /\b(?:response_format|json_schema|responseMimeType|response_mime_type|responseSchema|response_schema|generateObject|zodResponseFormat|text_format|output_format|tool_choice)\b/;
-const COMMENT_LINE_RE = /^\s*(?:#|\/\/|\/\*|\*|--)/;
+/** A line that is only a comment, in the languages the scanner reads. */
+export const COMMENT_LINE_RE = /^\s*(?:#|\/\/|\/\*|\*|--)/;
 
-function callBlock(lines: string[], start: number, column: number): string {
+/**
+ * The text of a call from its opening parenthesis to the matching closing one (at most 80 lines). Brackets
+ * inside quoted strings don't count, so a ":)" in a prompt doesn't end the call early.
+ */
+export function callBlock(lines: string[], start: number, column: number): string {
   let depth = 0;
+  let quote: string | null = null;
   const parts: string[] = [];
-  for (let i = start; i < lines.length && i < start + 40; i++) {
+  for (let i = start; i < lines.length && i < start + 80; i++) {
     const text = i === start ? (lines[i] ?? "").slice(column) : (lines[i] ?? "");
     parts.push(text);
-    for (const ch of text) {
-      if (ch === "(") depth++;
+    // A ' or " string ends with its line; a template string can span lines.
+    if (quote === "'" || quote === '"') quote = null;
+    for (let j = 0; j < text.length; j++) {
+      const ch = text[j]!;
+      if (quote) {
+        if (ch === "\\") j++;
+        else if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+      else if (ch === "(") depth++;
       else if (ch === ")") {
         depth--;
         if (depth === 0) return parts.join("\n");
