@@ -1,6 +1,6 @@
 import { appendFile, readFile } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
-import { createClient, parseModelRef, withRetry, type LlmClient } from "@ai-change-guard/llm";
+import { createClient, parseModelRef, withRetry, type LlmClient } from "@ai-changeguard/llm";
 import {
   candidateProblem,
   cheaperCandidates,
@@ -18,8 +18,8 @@ import {
   runReplayJob,
   runWatch,
   slackMessage,
-} from "@ai-change-guard/replay";
-import { addOnlinePackageChecks, buildCheck, buildReport, checkSwitchIds, compareMcp, describeServer, listMcpTools, planPromptEdit, planSwitch, scanDirectory, type Report } from "@ai-change-guard/scanner";
+} from "@ai-changeguard/replay";
+import { addOnlinePackageChecks, buildCheck, buildReport, checkSwitchIds, compareMcp, describeServer, listMcpTools, planPromptEdit, planSwitch, scanDirectory, type Report } from "@ai-changeguard/scanner";
 import { createHash } from "node:crypto";
 import { githubApi, openEvidencePr, type GitHubApi } from "./pr.js";
 
