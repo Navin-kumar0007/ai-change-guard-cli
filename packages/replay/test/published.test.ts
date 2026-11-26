@@ -24,7 +24,7 @@ function report(items: ReplayReport["items"]): ReplayReport {
 const item = (id: string, verdict: ReplayReport["items"][number]["verdict"], answer = "an answer"): ReplayReport["items"][number] => ({
   id,
   verdict,
-  reasons: verdict === "same" ? [] : [{ code: "json-invalid", severity: verdict === "broken" ? "broken" : "changed", detail: `${id} detail` }],
+  reasons: verdict === "same" ? [] : [{ code: "format-broken", severity: verdict === "broken" ? "broken" : "changed", detail: `${id} detail` }],
   old: side,
   new: side,
   sampleOld: `old ${answer}`,
@@ -73,7 +73,39 @@ describe("the replay report published in a check run", () => {
     expect(readReplayCheckText('<!-- ai-change-guard:replay:v1 {"v":1,"oldModel":"a","newModel":"b","totals":{"same":1},"items":[]} -->')).toBeNull();
   });
 
-  it("fails the check on a broken prompt and asks for a look on a changed one", () => {
+  it("rebuilds a partial or tampered report instead of passing it on", () => {
+    const wrap = (o: unknown) => `<!-- ai-change-guard:replay:v1 ${JSON.stringify(o)} -->`;
+    const partial = readReplayCheckText(
+      wrap({
+        v: 1,
+        oldModel: "a",
+        newModel: "b",
+        totals: { same: 1, changed: 1, broken: 0, error: 0 },
+        items: [{ id: "x", verdict: "changed", reasons: ["ok", { evil: true }, 5], sampleOld: { not: "text" } }],
+        reroutes: "nope",
+        costPerCall: { old: "free", new: 0.001 },
+        prUrl: 7,
+      }),
+    )!;
+    expect(partial).toMatchObject({ runs: 1, calls: 0, omittedItems: 0, reroutes: [], rateLimited: false, costPerCall: { new: 0.001 } });
+    expect(partial.avgTokens).toEqual({ old: { input: 0, output: 0 }, new: { input: 0, output: 0 } });
+    expect(partial.avgLatencyMs).toEqual({ old: 0, new: 0 });
+    expect(partial.items).toEqual([{ id: "x", verdict: "changed", reasons: ["ok"] }]);
+    expect(partial.prUrl).toBeUndefined();
+    // An item without a real verdict makes the whole report unreadable rather than half shown.
+    expect(readReplayCheckText(wrap({ v: 1, oldModel: "a", newModel: "b", totals: { same: 0, changed: 0, broken: 0, error: 0 }, items: [{ id: "x", verdict: "maybe" }] }))).toBeNull();
+  });
+
+  it("always fits, even when the models' names are absurdly long", () => {
+    const long = { ...report([item("a", "changed")]), oldModel: `openai:${"m".repeat(70_000)}`, reroutes: Array.from({ length: 500 }, () => ({ side: "new" as const, requested: "x".repeat(300), served: "y".repeat(300) })) };
+    const text = replayCheckText(long, undefined, 60_000);
+    expect(text.length).toBeLessThanOrEqual(60_000);
+    expect(readReplayCheckText(text)?.reroutes).toHaveLength(10);
+  });
+
+  it("fails the check only when the job fails, and asks for a look otherwise", () => {
+    expect(replayConclusion({ totals: { same: 5, changed: 0, broken: 1, error: 0 } }, "none")).toBe("neutral");
+    expect(replayConclusion({ totals: { same: 5, changed: 1, broken: 0, error: 0 } }, "changed")).toBe("failure");
     expect(replayConclusion({ totals: { same: 5, changed: 0, broken: 1, error: 0 } })).toBe("failure");
     expect(replayConclusion({ totals: { same: 5, changed: 1, broken: 0, error: 0 } })).toBe("neutral");
     expect(replayConclusion({ totals: { same: 5, changed: 0, broken: 0, error: 1 } })).toBe("neutral");

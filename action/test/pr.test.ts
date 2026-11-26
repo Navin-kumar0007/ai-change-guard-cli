@@ -374,6 +374,13 @@ describe("the model switch report on the dashboard", () => {
     expect(checkLines).toEqual(["AI Change Guard: saved the model switch report as a check run; it shows on your AI Change Guard dashboard"]);
   });
 
+  it("still saves the report when opening the pull request fails", async () => {
+    const { api, checks } = fakeGitHub({ denyPulls: true });
+    await expect(runWithPr(api)).rejects.toThrow(/Allow GitHub Actions to create and approve pull requests/);
+    expect(checks).toHaveLength(1);
+    expect((checks[0]!.body as { output: { text: string } }).output.text).not.toContain("prUrl");
+  });
+
   it("says how to turn it on when the workflow may not write checks, and the job still passes", async () => {
     const { api } = fakeGitHub({ denyChecks: true });
     const { code, checkLines } = await runWithPr(api);

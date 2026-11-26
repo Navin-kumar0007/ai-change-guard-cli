@@ -31199,8 +31199,8 @@ var safeJson = (value) => JSON.stringify(value).replace(/</g, "\\u003c").replace
 function replayCheckText(report, prUrl, limit = TEXT_LIMIT) {
   const base = {
     v: 1,
-    oldModel: report.oldModel,
-    newModel: report.newModel,
+    oldModel: report.oldModel.slice(0, 200),
+    newModel: report.newModel.slice(0, 200),
     runs: report.runs,
     calls: report.calls,
     failedCalls: report.failedCalls,
@@ -31210,8 +31210,8 @@ function replayCheckText(report, prUrl, limit = TEXT_LIMIT) {
     ...report.costPerCall ? { costPerCall: report.costPerCall } : {},
     comparedPrompts: report.comparedPrompts,
     rateLimited: report.rateLimited,
-    reroutes: report.reroutes,
-    ...prUrl ? { prUrl } : {}
+    reroutes: report.reroutes.slice(0, 10).map((r) => ({ side: r.side, requested: r.requested.slice(0, 200), served: r.served.slice(0, 200) })),
+    ...prUrl ? { prUrl: prUrl.slice(0, 500) } : {}
   };
   const wrap2 = (items2, omitted) => `<!-- ${MARK} ${safeJson({ ...base, items: items2, omittedItems: omitted })} -->`;
   for (const [sample, sameSamples] of [[2e3, true], [2e3, false], [800, false], [300, false]]) {
@@ -31225,11 +31225,11 @@ function replayCheckText(report, prUrl, limit = TEXT_LIMIT) {
     keep = Math.floor(keep * 0.8);
   return wrap2(items.slice(0, keep), items.length - keep);
 }
-function replayConclusion(report) {
+function replayConclusion(report, failOn = "broken") {
   const t = report.totals;
-  if (t.broken > 0)
+  if (failOn === "broken" && t.broken > 0 || failOn === "changed" && t.broken + t.changed > 0)
     return "failure";
-  return t.changed + t.error > 0 ? "neutral" : "success";
+  return t.broken + t.changed + t.error > 0 ? "neutral" : "success";
 }
 function replayTitle(report) {
   const t = report.totals;
@@ -33656,7 +33656,7 @@ function switchIds(oldModel, newModel) {
   const ids = checkSwitchIds(last(a.model), last(b.model));
   return prefix(a.model) ? { ...ids, prefix: prefix(a.model) } : ids;
 }
-async function publishReplayCheck({ env, log, github, replay, prUrl }) {
+async function publishReplayCheck({ env, log, github, replay, prUrl, failOn }) {
   const repo = env.GITHUB_REPOSITORY ?? "";
   const sha = env.GITHUB_SHA ?? "";
   const token = input("github-token", env) || env.GITHUB_TOKEN || "";
@@ -33666,7 +33666,7 @@ async function publishReplayCheck({ env, log, github, replay, prUrl }) {
       name: REPLAY_CHECK_NAME,
       head_sha: sha,
       status: "completed",
-      conclusion: replayConclusion(replay),
+      conclusion: replayConclusion(replay, failOn),
       output: { title: replayTitle(replay), summary: formatReplayMarkdown(replay).slice(0, 6e4), text: replayCheckText(replay, prUrl) }
     });
     log("AI Change Guard: saved the model switch report as a check run; it shows on your AI Change Guard dashboard");
@@ -33900,35 +33900,38 @@ ${check2.summary}`);
     log(`${replayFailed ? "::error::" : ""}AI Change Guard replay: ${replay.totals.same} same, ${changed} changed, ${broken} broken`);
     failed = failed || replayFailed;
     let prUrl;
-    if (ids && plan) {
-      const notice = (text) => log(`::notice::AI Change Guard: ${text}`);
-      if (replayFailed || broken > 0 || replay.totals.error > 0) {
-        notice("no pull request, because the replay did not pass (see the Summary).");
-      } else if (plan.edits.length === 0) {
-        notice(`no pull request, because no code uses ${ids.from} as a plain model ID${plan.skipped.length ? ` (${plan.skipped.length} use(s) need a manual change)` : ""}.`);
-      } else {
-        const token = input("github-token", env) || env.GITHUB_TOKEN || "";
-        if (!github && !token) throw new Error('open-pr needs a token: keep the default "github-token" input or pass one.');
-        const repo = env.GITHUB_REPOSITORY ?? "";
-        const result = await openEvidencePr({
-          api: github ?? githubApi(token, env.GITHUB_API_URL),
-          repo,
-          ref: env.GITHUB_REF ?? "",
-          sha: env.GITHUB_SHA ?? "",
-          workspace,
-          scanPath: relative2(workspace, scanRoot).split(sep2).join("/"),
-          plan,
-          replay
-        });
-        if (result.action === "skipped") notice(`no pull request. ${result.reason}`);
-        else {
-          log(`AI Change Guard ${result.action} pull request #${result.number}: ${result.url}`);
-          await summary(`**Evidence pull request ${result.action}:** [#${result.number}](${result.url})`);
-          prUrl = result.url;
+    try {
+      if (ids && plan) {
+        const notice = (text) => log(`::notice::AI Change Guard: ${text}`);
+        if (replayFailed || broken > 0 || replay.totals.error > 0) {
+          notice("no pull request, because the replay did not pass (see the Summary).");
+        } else if (plan.edits.length === 0) {
+          notice(`no pull request, because no code uses ${ids.from} as a plain model ID${plan.skipped.length ? ` (${plan.skipped.length} use(s) need a manual change)` : ""}.`);
+        } else {
+          const token = input("github-token", env) || env.GITHUB_TOKEN || "";
+          if (!github && !token) throw new Error('open-pr needs a token: keep the default "github-token" input or pass one.');
+          const repo = env.GITHUB_REPOSITORY ?? "";
+          const result = await openEvidencePr({
+            api: github ?? githubApi(token, env.GITHUB_API_URL),
+            repo,
+            ref: env.GITHUB_REF ?? "",
+            sha: env.GITHUB_SHA ?? "",
+            workspace,
+            scanPath: relative2(workspace, scanRoot).split(sep2).join("/"),
+            plan,
+            replay
+          });
+          if (result.action === "skipped") notice(`no pull request. ${result.reason}`);
+          else {
+            log(`AI Change Guard ${result.action} pull request #${result.number}: ${result.url}`);
+            await summary(`**Evidence pull request ${result.action}:** [#${result.number}](${result.url})`);
+            prUrl = result.url;
+          }
         }
       }
+    } finally {
+      await publishReplayCheck({ env, log, github, replay, prUrl, failOn: replayFailOn });
     }
-    await publishReplayCheck({ env, log, github, replay, prUrl });
   }
   return failed ? 1 : 0;
 }
