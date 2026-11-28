@@ -29,7 +29,7 @@ If that fails (no network, or the package is not available), search the code you
 
 ## 2. Look up each one in the catalog
 
-Fetch `https://ai-change-guard.vercel.app/radar.json` (public, no key). It sends nothing about this repository.
+Fetch `https://aichangeguard.com/radar.json` (public, no key). It sends nothing about this repository.
 Each entry in `entries` has `kind` (`model` or `api`), `name`, `provider`, `platform`, `date` (YYYY-MM-DD),
 `daysLeft` (negative or zero once the date has passed), `reroutesTo`, `replacement`, `verified`, `source` and
 `slug`. API entries also have `patterns`: regular expressions to search the code with.
@@ -52,7 +52,7 @@ One table, soonest change first:
 - Change: "Retires", "Shuts down", or "Reroutes to X" (calls keep working but another model answers them, with no
   error, so answers can change).
 - Mark a date whose `verified` is false with `*` and say it is not yet checked against the official page.
-- Link each row to `https://ai-change-guard.vercel.app/radar/<slug>` for the details and the official source.
+- Link each row to `https://aichangeguard.com/radar/<slug>` for the details and the official source.
 - Put already-retired models first: calls to them may be failing now.
 
 ## 4. Is the replacement safe?
@@ -75,5 +75,5 @@ Offer to run these if the user wants and has an API key set. Never print or stor
 - Switch the model IDs in the code once a replay passes: `ai-change-guard switch . --from <old> --to <new>`
   (shows the changes; add `--write` to make them).
 - Get warned before the next change: the free AI Change Guard GitHub App checks every pull request and emails before
-  each model the code uses changes (https://ai-change-guard.vercel.app/install).
-- Every announced change, with sources: https://ai-change-guard.vercel.app/radar
+  each model the code uses changes (https://aichangeguard.com/install).
+- Every announced change, with sources: https://aichangeguard.com/radar

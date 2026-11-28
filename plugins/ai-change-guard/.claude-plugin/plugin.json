@@ -4,9 +4,9 @@
   "description": "Find the AI models and APIs your code uses and see which retire, reroute or shut down, with dates, official sources and replacements.",
   "author": {
     "name": "AI Change Guard",
-    "url": "https://ai-change-guard.vercel.app"
+    "url": "https://aichangeguard.com"
   },
-  "homepage": "https://ai-change-guard.vercel.app",
+  "homepage": "https://aichangeguard.com",
   "repository": "https://github.com/Navin-kumar0007/ai-change-guard-cli",
   "license": "MIT",
   "keywords": [

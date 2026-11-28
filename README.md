@@ -85,7 +85,7 @@ On Claude Code older than 2.1.275, add the marketplace first: `/plugin marketpla
 
 **Cursor:** copy [`integrations/cursor/ai-change-guard.mdc`](integrations/cursor/ai-change-guard.mdc) into your project's `.cursor/rules/`.
 
-The skill finds every model ID and AI API in the code, looks each one up in the public catalog (`https://ai-change-guard.vercel.app/radar.json`; nothing about your code is sent), and reports the date, days left, the official source and the replacement. It does not call the replacement "safe" without a replay of your own prompts, and it shows how to run one.
+The skill finds every model ID and AI API in the code, looks each one up in the public catalog (`https://aichangeguard.com/radar.json`; nothing about your code is sent), and reports the date, days left, the official source and the replacement. It does not call the replacement "safe" without a replay of your own prompts, and it shows how to run one.
 
 ## Leaving OpenAI Evals (it shuts down on 30 November 2026)
 

@@ -131,7 +131,7 @@ jobs:
 
 Also turn on **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests**.
 
-Every replay is also saved as a check run named **AI Change Guard model switch** on the commit (title such as "45 same · 3 changed · 2 broken"), which is where the [AI Change Guard dashboard](https://ai-change-guard.vercel.app/dashboard) reads its migration report. The nightly watch and Money-Finder save theirs too (**AI Change Guard nightly watch**, **AI Change Guard Money-Finder**), shown on the dashboard as last night's result and the savings card. It needs `checks: write`; without it the Action says so in a notice and carries on.
+Every replay is also saved as a check run named **AI Change Guard model switch** on the commit (title such as "45 same · 3 changed · 2 broken"), which is where the [AI Change Guard dashboard](https://aichangeguard.com/dashboard) reads its migration report. The nightly watch and Money-Finder save theirs too (**AI Change Guard nightly watch**, **AI Change Guard Money-Finder**), shown on the dashboard as last night's result and the savings card. It needs `checks: write`; without it the Action says so in a notice and carries on.
 
 How it behaves:
 

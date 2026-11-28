@@ -3,7 +3,7 @@
   "description": "AI Change Guard: know before your AI model changes.",
   "owner": {
     "name": "AI Change Guard",
-    "url": "https://ai-change-guard.vercel.app"
+    "url": "https://aichangeguard.com"
   },
   "plugins": [
     {
